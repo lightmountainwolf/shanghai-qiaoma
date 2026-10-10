@@ -1,0 +1,20 @@
+{
+  "name": "shanghai-qiaoma",
+  "version": "1.0.0",
+  "description": "上海敲麻 - TypeScript + Canvas 实现",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test dist/test/core.test.js",
+    "start": "node dist/src/ui/server.js",
+    "postinstall": "tsc",
+    "dev": "tsc --watch"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "playwright-core": "^1.64.0",
+    "typescript": "^7.0.2"
+  },
+  "type": "module"
+}
