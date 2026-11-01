@@ -472,8 +472,6 @@ canvas.addEventListener('pointerup', (e) => {
     // 上滑超过 30px 也算确认出牌（配合手指遮挡牌面的情况）
     const draggedUp = cur.startY - p.y > 30;
     if (inTile || draggedUp) {
-        // 记录起点，让打出的牌从指尖位置飞向中央
-        renderer.noteMyDiscard(cur.rect.x + cur.rect.w / 2, cur.rect.y + cur.rect.h / 2);
         discardTile(cur.tile);
     }
     else {

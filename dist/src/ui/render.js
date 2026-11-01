@@ -7,14 +7,9 @@
  *   - 手牌自动缩放，保证 14 张始终在一屏内
  *   - 对手手牌竖排（牌背朝上，纵向堆叠），符合手机端习惯
  */
-import { isSuited, suitOf, rankOf, tileChar, tileName, ALL_KINDS, FLOWERS, } from '../core/tiles.js';
+import { suitOf, tileChar, tileName, ALL_KINDS, } from '../core/tiles.js';
 import { meldTiles } from '../core/scoring.js';
 import { drawTileFace, drawTileBody, drawFlowerChip, } from './tileface.js';
-/** 牌面文字用的牌名（万筒条字牌与花牌） */
-const CN_ZI = ['东', '南', '西', '北', '中', '发', '白'];
-const COL_RED = '#b8342a';
-const COL_GREEN = '#146b40';
-const COL_BLUE = '#1f4f8a';
 const C = {
     feltA: '#1e4a3c',
     feltB: '#0f2820',
@@ -45,21 +40,20 @@ export class Renderer {
     flowerBlockH = 0;
     /** 自己的副露块占用的高度 */
     meldBlockH = 0;
+    /** 自己手牌区（含副露/花牌/徽标/听口提示）的最高点，供中央牌河避让 */
+    handTopY = 0;
     /** 最近补花的事件（用于闪烁提示），{player, flower, at} */
     lastFlowerEvent = null;
     seenFlowerCount = 0;
     /** 刚摸到的牌：单独摆在手牌最右侧，并带滑入动效 */
     drawnTile = -1;
     drawnAt = 0;
-    /** 最近一次弃牌的标识与动效起点（牌从出牌方滑入中央） */
+    /** 最近一次弃牌的标识与动效时间（中央最新弃牌的落位动画） */
     lastDiscardKey = '';
     discardFxAt = 0;
-    discardFxFrom = 0;
     /** 点击了不能打出的牌时的红色反馈 */
     invalidTile = -1;
     invalidAt = 0;
-    /** 自己刚点击出牌的位置：让弃牌从这张牌的位置飞向中央，视觉更连贯 */
-    myDiscardFrom = null;
     /** 布局参数，随模式变化 */
     L;
     constructor(canvas, game) {
@@ -85,16 +79,11 @@ export class Renderer {
         this.invalidAt = 0;
         this.lastFlowerEvent = null;
         this.seenFlowerCount = 0;
-        this.myDiscardFrom = null;
     }
     /** 点击了当前不能打出的牌：短暂红色描边反馈 */
     flashInvalid(t) {
         this.invalidTile = t;
         this.invalidAt = Date.now();
-    }
-    /** 记录自己这次出牌的起点，弃牌会从该位置飞向中央 */
-    noteMyDiscard(x, y) {
-        this.myDiscardFrom = { x, y, at: Date.now() };
     }
     /** 是否还有动效在播放（主循环据此决定要不要继续重绘） */
     animActive() {
@@ -177,7 +166,6 @@ export class Renderer {
         if (ldKey !== this.lastDiscardKey) {
             this.lastDiscardKey = ldKey;
             this.discardFxAt = ld ? Date.now() : 0;
-            this.discardFxFrom = ld ? ld.player : 0;
         }
         const grad = g.createRadialGradient(this.W / 2, this.H * 0.42, 40, this.W / 2, this.H / 2, Math.max(this.W, this.H) * 0.75);
         grad.addColorStop(0, C.feltA);
@@ -207,7 +195,7 @@ export class Renderer {
             this.drawSidePlayer(right, this.W - L.sideX, L.sideY, playerId);
         }
         this.drawMyHand(me, playerId, opts);
-        this.drawCenter();
+        this.drawCenter(playerId);
         this.drawFlowerFlash(playerId);
     }
     /** 补花提示：谁的什么花被亮出并补了牌，短暂高亮 */
@@ -481,6 +469,8 @@ export class Renderer {
             g.fillText(`已敲 · 听 ${me.qiTiles.map((t) => tileName(t)).join(' ')}`, this.W / 2, cursorY);
             g.restore();
         }
+        // 记录手牌区最上方（含副露/花牌/花数徽标/听口提示），中央牌河以此避让
+        this.handTopY = me.hasQi ? cursorY - 8 : cursorY + 4;
         // ⑤ 手牌本体（最后画，保证盖住下方元素）
         // 轮到自己出牌时，把「不能打出的牌」压暗，可选牌自然凸显
         const isDiscardTurn = opts.selectable.size > 0;
@@ -601,41 +591,134 @@ export class Renderer {
         drawFlowerChip(this.ctx, x, y, s, t);
     }
     // ---------- 中央：弃牌 + 牌墙 ----------
-    drawCenter() {
+    /**
+     * 绘制四家牌河与牌墙进度。
+     *
+     * 旧版四家牌河会互相压住（左右两家的竖排直接叠在上下两家的横排上），
+     * 而且小牌是「花色小标 + 数字」的简略图，不像真正的麻将。
+     * 现在改为：
+     *   1. 先划出一块不与任何手牌 / 副露相交的「牌河区」；
+     *   2. 四个牌河按十字分布：自己在下、对家在上、下家在右、上家在左，
+     *      每个牌块各自居中并朝自己的方位生长，互不重叠；
+     *   3. 每张弃牌都用完整经典牌面，最新打出的一张加金色描边并做落位缩放；
+     *   4. 牌多到放不下时只缩小该牌块，保证不越界、不压别家。
+     */
+    drawCenter(playerId) {
         const g = this.ctx;
+        const L = this.L;
+        const portrait = this.portrait;
         const cx = this.W / 2;
-        const cy = this.portrait ? this.L.sideY : this.H / 2 - 18;
-        const { tileW: tw, tileH: th } = this.L;
-        // 牌河占中央区域；提示条放在中央上方，三者不重叠
-        const pw = Math.max(14, tw * 0.4);
-        const ph = Math.max(19, th * 0.38);
-        this.drawDiscardPiles(cx, cy, pw, ph, tw, th);
-        // 中央高亮区：刚打出的那张牌（从出牌方滑入中央，落子感更强）
-        if (this.game.lastDiscard) {
-            const dw = tw * 0.8, dh = th * 0.8;
-            const tx = cx - dw / 2, ty = cy - dh / 2;
-            const age = Date.now() - this.discardFxAt;
-            const p = this.discardFxAt ? Math.min(1, age / 300) : 1;
-            const e = 1 - Math.pow(1 - p, 3);
-            const src = this.anchorOf(this.discardFxFrom);
-            const x = src.x + (tx - src.x) * e;
-            const y = src.y + (ty - src.y) * e;
-            const s = 1.2 - 0.2 * e;
+        // ---- 牌河区：避开四家手牌、自己的副露/花牌与顶部玩家信息 ----
+        // 横屏时左右两家是横向大排手牌，牌河要落在它们内侧，否则会压住手牌
+        const x0 = portrait
+            ? Math.max(86, this.W * 0.215)
+            : Math.max(L.sideX + 170, this.W * 0.30);
+        const x1 = this.W - x0;
+        const y0 = L.topY + L.oppTh + (portrait ? 50 : 46);
+        // 下边界贴着手牌区上方留白：副露/花牌/听口提示越多，牌河区就越小
+        const y1 = Math.max(y0 + 44, this.handTopY - 12);
+        const cy = (y0 + y1) / 2;
+        // 单张弃牌的尺寸：按牌河区反推，保证上下各 4 行、左右各 3 列都放得下
+        const rw = Math.max(10, Math.min(portrait ? 19 : 24, Math.min((x1 - x0) / 15.5, (y1 - y0) / 11.5)));
+        const rh = rw * 1.38;
+        const gap = Math.max(1, rw * 0.08);
+        const midGap = Math.max(4, rw * 0.45);
+        // 左右牌河的宽度上限：把中间一条留给上下牌河，防止两者横向挤在一起
+        const sideSlotW = Math.min((x1 - x0) / 2 - midGap, Math.max(rw * 2.5, (x1 - x0) * 0.22));
+        const last = this.game.lastDiscard;
+        const now = Date.now();
+        // 画一张弃牌：经典完整牌面；最新的一张带金色描边 + 落位缩放
+        const put = (x, y, w, h, t, newest) => {
+            if (!newest) {
+                this.drawTile(x, y, w, h, t, false, false, false);
+                return;
+            }
+            const age = now - this.discardFxAt;
+            const p = this.discardFxAt ? Math.min(1, age / 260) : 1;
+            const s = 1.14 - 0.14 * (1 - Math.pow(1 - p, 3));
+            const nw = w * s, nh = h * s;
             g.save();
-            g.globalAlpha = 0.5 + 0.5 * e;
-            this.drawTile(x + dw * (1 - s) / 2, y + dh * (1 - s) / 2, dw * s, dh * s, this.game.lastDiscard.tile, false, false, true);
+            g.shadowColor = 'rgba(212,175,106,.5)';
+            g.shadowBlur = 8;
+            this.drawTile(x - (nw - w) / 2, y - (nh - h) / 2, nw, nh, t, false, false, true);
             g.restore();
+        };
+        // 相对方位：0 自己(下) 1 下家(右) 2 对家(上) 3 上家(左)
+        for (let rel = 0; rel < 4; rel++) {
+            const pid = (playerId + rel) % 4;
+            const pile = this.game.pileOf(pid);
+            if (pile.length === 0)
+                continue;
+            const horizontal = rel === 0 || rel === 2;
+            // 可用空间：横排要给左右牌河让位；竖排只能用左右各自的槽位宽度
+            const availW = horizontal
+                ? (x1 - x0) - 2 * (sideSlotW + midGap)
+                : sideSlotW;
+            const availH = horizontal ? (y1 - y0) / 2 - midGap : (y1 - y0);
+            // 每行/每列张数：默认横排 6、竖排 8；空间不够时先加宽，
+            // 尽量别把牌压得太小
+            const capW = Math.max(1, Math.floor((availW + gap) / (rw + gap)));
+            const capH = Math.max(1, Math.floor((availH + gap) / (rh + gap)));
+            const perLine = horizontal
+                ? Math.min(capW, Math.max(6, Math.ceil(pile.length / capH)))
+                : Math.min(capH, Math.max(8, Math.ceil(pile.length / capW)));
+            const lines = Math.ceil(pile.length / perLine);
+            const inFirst = Math.min(pile.length, perLine);
+            // 牌块在横向 / 纵向各占几格
+            const cellsW = horizontal ? inFirst : lines;
+            const cellsH = horizontal ? lines : inFirst;
+            let w = rw, h = rh, gp = gap;
+            const needW = cellsW * (w + gp) - gp;
+            const needH = cellsH * (h + gp) - gp;
+            // 放不下就整体等比缩小，绝不越界
+            const s = Math.min(1, availW / Math.max(1, needW), availH / Math.max(1, needH));
+            if (s < 1) {
+                w *= s;
+                h *= s;
+                gp *= s;
+            }
+            const stepX = w + gp;
+            const stepY = h + gp;
+            const blockH = cellsH * stepY - gp;
+            for (let i = 0; i < pile.length; i++) {
+                const line = Math.floor(i / perLine);
+                const idx = i % perLine;
+                const inLine = Math.min(pile.length - line * perLine, perLine);
+                const newest = last !== null && last.player === pid && i === pile.length - 1;
+                if (horizontal) {
+                    // 每行按本行实际张数居中；自己往下生长，对家往上生长
+                    const rowW = inLine * stepX - gp;
+                    const px = cx - rowW / 2 + idx * stepX;
+                    const py = rel === 0
+                        ? cy + midGap + line * stepY
+                        : cy - midGap - blockH + line * stepY;
+                    put(px, py, w, h, pile[i], newest);
+                }
+                else {
+                    // 每列按本列实际张数垂直居中；下家在右（向左生长），上家在左（向右生长）
+                    const colH = inLine * stepY - gp;
+                    const px = rel === 1 ? x1 - w - line * stepX : x0 + line * stepX;
+                    const py = cy - colH / 2 + idx * stepY;
+                    put(px, py, w, h, pile[i], newest);
+                }
+            }
         }
-        // 牌墙进度条：中央上方
-        const barW = Math.min(this.W * 0.42, 230);
-        const barH = 5;
-        const bx = cx - barW / 2;
-        const by = cy - th * 0.62 - ph - 26;
-        const ratio = this.game.wall.remaining / 144;
+        // ---- 牌墙进度：右上角小徽标，不压牌河也不挡玩家信息 ----
+        const barW = portrait ? Math.min(84, this.W * 0.22) : 96;
+        const barH = 4;
+        const bx = this.W - 12 - barW;
+        const by = 20;
         g.save();
+        g.textAlign = 'right';
+        g.textBaseline = 'middle';
+        g.font = `${portrait ? 10 : 11}px "PingFang SC", sans-serif`;
+        g.fillStyle = C.dim;
+        g.fillText(`牌墙 ${this.game.wall.remaining}`
+            + (this.game.huangFan > 0 ? ` · 荒番 ×${this.game.huangFan}` : ''), this.W - 12, by - 8);
         g.fillStyle = 'rgba(0,0,0,.38)';
-        this.roundRect(bx, by, barW, barH, 3);
+        this.roundRect(bx, by, barW, barH, 2);
         g.fill();
+        const ratio = Math.min(1, this.game.wall.remaining / 144);
         const bg = g.createLinearGradient(bx, 0, bx + barW, 0);
         if (ratio > 0.3) {
             bg.addColorStop(0, '#8a7040');
@@ -646,155 +729,8 @@ export class Renderer {
             bg.addColorStop(1, '#c0392b');
         }
         g.fillStyle = bg;
-        this.roundRect(bx, by, barW * ratio, barH, 3);
+        this.roundRect(bx, by, Math.max(2, barW * ratio), barH, 2);
         g.fill();
-        g.font = '10px "PingFang SC", sans-serif';
-        g.fillStyle = C.dim;
-        g.textAlign = 'center';
-        g.textBaseline = 'middle';
-        g.fillText(`牌墙 ${this.game.wall.remaining}` +
-            (this.game.huangFan > 0 ? ` · 荒番 ×${this.game.huangFan}` : ''), cx, by - 9);
-        g.restore();
-        // 回合提示：牌墙条再上方
-        g.save();
-        g.textAlign = 'center';
-        g.textBaseline = 'middle';
-        g.font = `${this.portrait ? 12 : 13}px "PingFang SC", sans-serif`;
-        g.fillStyle = this.game.turn === 0 ? C.gold : C.dim;
-        g.fillText(this.game.turn === 0 ? '轮到你出牌' : `轮到 P${this.game.turn}`, cx, by - 26);
-        g.restore();
-    }
-    /** 各家手牌区域的大致中心，用于弃牌飞入动效的起点 */
-    anchorOf(pid) {
-        const L = this.L;
-        switch (pid) {
-            case 0: {
-                // 自己出牌：优先用刚点击的那张牌的位置，视觉上「牌从手里飞出去」
-                const m = this.myDiscardFrom;
-                if (m && Date.now() - m.at < 800)
-                    return { x: m.x, y: m.y };
-                return { x: this.W / 2, y: L.handY + L.tileH * 0.4 };
-            }
-            case 1: return { x: this.W - L.sideX, y: L.sideY };
-            case 2: return { x: this.W / 2, y: L.topY + 10 };
-            default: return { x: L.sideX, y: L.sideY };
-        }
-    }
-    /**
-     * 绘制四家牌河（弃牌堆）。
-     * 每家占据中央的一个方位，互不重叠：
-     *   自己(P0) → 中央下方；右家(P1) → 右；左家(P3) → 左；对家(P2) → 上方（牌墙条之上）
-     */
-    drawDiscardPiles(cx, cy, pw, ph, tw, th) {
-        const step = pw + 2;
-        const vStep = ph + 2;
-        const PER_ROW = 6;
-        // 相对 P0：0=自己(bottom) 1=下家(right) 2=对家(top) 3=上家(left)
-        const dirs = ['bottom', 'right', 'top', 'left'];
-        for (let pid = 0; pid < 4; pid++) {
-            const pile = this.game.pileOf(pid);
-            if (pile.length === 0)
-                continue;
-            const dir = dirs[pid];
-            if (dir === 'bottom' || dir === 'top') {
-                // 横向排布，向上/向下逐行生长
-                const grow = dir === 'bottom' ? 1 : -1;
-                const baseY = dir === 'bottom' ? cy + th * 0.5 : cy - th * 0.5 - ph - vStep;
-                // 对家(P2)往左偏一格，避免与自己(P0)的牌河视觉混淆
-                const dx = dir === 'top' ? -PER_ROW * (pw + 2) * 0.24 : 0;
-                for (let i = 0; i < pile.length; i++) {
-                    const row = Math.floor(i / PER_ROW);
-                    const col = i % PER_ROW;
-                    const inRow = Math.min(pile.length - row * PER_ROW, PER_ROW);
-                    const rowW = inRow * step - 2;
-                    const x = cx + dx - rowW / 2 + col * step;
-                    const y = baseY + grow * row * vStep;
-                    this.drawMiniPileTile(x, y, pw, ph, pile[i], pid === 0 && i === pile.length - 1, pid);
-                }
-            }
-            else {
-                // 左右两家：纵向排布，位置靠外侧避免与中央拥挤
-                const sign = dir === 'right' ? 1 : -1;
-                const baseX = dir === 'right' ? cx + tw * 1.55 : cx - tw * 1.55 - pw;
-                for (let i = 0; i < pile.length; i++) {
-                    const col = Math.floor(i / 8);
-                    const row = i % 8;
-                    const inCol = Math.min(pile.length - col * 8, 8);
-                    const colH = inCol * step - 2;
-                    const x = baseX + sign * col * (ph * 0.6);
-                    const y = cy - colH / 2 + row * step;
-                    this.drawMiniPileTile(x, y, pw, ph, pile[i], false, pid);
-                }
-            }
-        }
-    }
-    /** 各家牌河的边框色，用于区分归属 */
-    static PILE_TINT = [
-        'rgba(212,175,106,.55)', // P0 自己：金
-        'rgba(120,180,220,.45)', // P1：蓝
-        'rgba(150,200,140,.45)', // P2：绿
-        'rgba(210,150,190,.45)', // P3：紫
-    ];
-    /**
-     * 牌河里的小牌。
-     * 尺寸太小画不下完整图案，因此用「花色小标 + 数字」的紧凑形式：
-     * 万=方块、筒=圆、条=斜杠，配一个数字；字牌直接用大字。
-     */
-    drawMiniPileTile(x, y, w, h, t, highlight, owner = 0) {
-        const g = this.ctx;
-        const r = Math.max(2, w * 0.14);
-        g.save();
-        // 阴影
-        g.fillStyle = 'rgba(0,0,0,.26)';
-        this.roundRect(x + 0.7, y + 1.2, w, h, r);
-        g.fill();
-        // 牌面
-        const grad = g.createLinearGradient(x, y, x, y + h);
-        grad.addColorStop(0, '#fffdf6');
-        grad.addColorStop(1, '#efe6d0');
-        g.fillStyle = grad;
-        this.roundRect(x, y, w, h, r);
-        g.fill();
-        g.strokeStyle = highlight ? C.gold : (Renderer.PILE_TINT[owner] ?? '#a8977a');
-        g.lineWidth = highlight ? 1.4 : 0.7;
-        this.roundRect(x + 0.3, y + 0.3, w - 0.6, h - 0.6, r);
-        g.stroke();
-        // 内容：小牌用简化图形
-        const cx = x + w / 2;
-        const cy = y + h / 2;
-        const sz = Math.min(w, h);
-        if (isSuited(t)) {
-            const suit = suitOf(t);
-            const rank = rankOf(t);
-            // 花色小图标（左上角）
-            const ic = sz * 0.17;
-            g.fillStyle = suit === 's' ? COL_GREEN : COL_BLUE;
-            if (suit === 't') {
-                g.beginPath();
-                g.arc(x + w * 0.28, y + h * 0.26, ic * 0.62, 0, Math.PI * 2);
-                g.fill();
-            }
-            else if (suit === 'w') {
-                g.fillRect(x + w * 0.28 - ic * 0.45, y + h * 0.26 - ic * 0.45, ic * 0.9, ic * 0.9);
-            }
-            else {
-                g.fillRect(x + w * 0.28 - ic * 0.3, y + h * 0.26 - ic * 0.6, ic * 0.6, ic * 1.2);
-            }
-            // 数字（主视觉）
-            g.fillStyle = suit === 's' ? COL_GREEN : COL_BLUE;
-            g.font = `bold ${Math.max(8, Math.floor(h * 0.52))}px "PingFang SC","Microsoft YaHei",sans-serif`;
-            g.textAlign = 'center';
-            g.textBaseline = 'middle';
-            g.fillText(String(rank), cx, cy + h * 0.08);
-        }
-        else {
-            const ch = t < 0 ? FLOWERS[-(t + 1)] : CN_ZI[t - 27];
-            g.fillStyle = t === 32 ? COL_GREEN : COL_RED;
-            g.font = `bold ${Math.max(8, Math.floor(h * 0.56))}px "STKaiti","KaiTi","PingFang SC",serif`;
-            g.textAlign = 'center';
-            g.textBaseline = 'middle';
-            g.fillText(ch, cx, cy);
-        }
         g.restore();
     }
     /**
