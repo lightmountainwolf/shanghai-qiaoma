@@ -11,9 +11,12 @@ import { suitOf, tileChar, tileName, ALL_KINDS, } from '../core/tiles.js';
 import { meldTiles } from '../core/scoring.js';
 import { drawTileFace, drawTileBody, drawFlowerChip, } from './tileface.js';
 const C = {
-    feltA: '#1e4a3c',
-    feltB: '#0f2820',
-    gold: '#d4af6a',
+    // 牌桌配色参考 JJ 麻将：亮翡翠绿桌面 + 暖金色包边
+    feltA: '#2f9e76',
+    feltMid: '#1d825f',
+    feltB: '#116b4b',
+    tableEdge: '#0a2f23',
+    gold: '#e3c07a',
     goldDim: '#8a7040',
     tileTop: '#fffdf6',
     tileBot: '#f0e8d5',
@@ -23,10 +26,19 @@ const C = {
     green: '#177a48',
     blue: '#26578f',
     ink: '#33301f',
-    text: '#f2e8d4',
-    dim: '#a3977e',
+    text: '#f4ecda',
+    dim: '#b9ae94',
     shadow: 'rgba(0,0,0,.4)',
 };
+/** 座位昵称（JJ 风格：座位卡片上显示昵称而不是 P0/P1） */
+const SEAT_NAMES = ['你', '阿飞', '小美', '老李'];
+/** 每个座位的头像主色 */
+const SEAT_COLORS = [
+    { bg1: '#ffd27a', bg2: '#d99434', hair: '#3a2c1c', cloth: '#d9553f' },
+    { bg1: '#8fc3ff', bg2: '#3f7fc0', hair: '#23262e', cloth: '#2f6fb8' },
+    { bg1: '#ffb0d8', bg2: '#c85f96', hair: '#4a2b1e', cloth: '#cf5f9c' },
+    { bg1: '#9fe0c2', bg2: '#3f9a72', hair: '#5c5c50', cloth: '#2f8f63' },
+];
 export class Renderer {
     canvas;
     ctx;
@@ -133,7 +145,7 @@ export class Renderer {
                 tileW: tw, tileH: th, gap: 3,
                 // 手牌贴底，上方留出花牌/徽标空间
                 handY: this.H - th - 10,
-                oppTw: 22, oppTh: 30,
+                oppTw: 18, oppTh: 26,
                 topY: 74,
                 sideY: this.H * 0.42,
                 sideX: Math.max(120, this.W * 0.13),
@@ -167,18 +179,48 @@ export class Renderer {
             this.lastDiscardKey = ldKey;
             this.discardFxAt = ld ? Date.now() : 0;
         }
-        const grad = g.createRadialGradient(this.W / 2, this.H * 0.42, 40, this.W / 2, this.H / 2, Math.max(this.W, this.H) * 0.75);
-        grad.addColorStop(0, C.feltA);
-        grad.addColorStop(1, C.feltB);
-        g.fillStyle = grad;
+        // 桌面外的深色边框
+        g.fillStyle = C.tableEdge;
         g.fillRect(0, 0, this.W, this.H);
-        // 中心微光
+        // 牌桌本体：亮翡翠绿渐变 + 金色包边（JJ 麻将的牌桌观感）
+        const tx = 3;
+        const ty = 3;
+        const tw = this.W - 6;
+        const th = this.H - 6;
+        const felt = g.createLinearGradient(0, ty, 0, ty + th);
+        felt.addColorStop(0, C.feltA);
+        felt.addColorStop(0.55, C.feltMid);
+        felt.addColorStop(1, C.feltB);
+        this.roundRect(tx, ty, tw, th, 14);
+        g.fillStyle = felt;
+        g.fill();
+        // 四周压暗，中间提亮，让视线集中在牌河
+        const vign = g.createRadialGradient(this.W / 2, this.H * 0.45, 20, this.W / 2, this.H * 0.45, Math.max(this.W, this.H) * 0.78);
+        vign.addColorStop(0, 'rgba(255,255,255,.10)');
+        vign.addColorStop(0.45, 'rgba(255,255,255,.02)');
+        vign.addColorStop(1, 'rgba(0,20,14,.42)');
+        g.fillStyle = vign;
+        this.roundRect(tx, ty, tw, th, 14);
+        g.fill();
+        // 金色包边 + 内侧细线
         g.save();
-        const gl = g.createRadialGradient(this.W / 2, this.H * 0.45, 10, this.W / 2, this.H * 0.45, this.W * 0.4);
-        gl.addColorStop(0, 'rgba(212,175,106,.06)');
-        gl.addColorStop(1, 'rgba(212,175,106,0)');
-        g.fillStyle = gl;
-        g.fillRect(0, 0, this.W, this.H);
+        g.strokeStyle = 'rgba(227,192,122,.62)';
+        g.lineWidth = 2;
+        this.roundRect(tx, ty, tw, th, 14);
+        g.stroke();
+        g.strokeStyle = 'rgba(255,255,255,.10)';
+        g.lineWidth = 1;
+        this.roundRect(tx + 4, ty + 4, tw - 8, th - 8, 11);
+        g.stroke();
+        g.restore();
+        // 桌面水印（JJ 麻将桌面同款居中暗纹）
+        g.save();
+        g.globalAlpha = 0.07;
+        g.fillStyle = '#ffffff';
+        g.font = `700 ${this.portrait ? 42 : 54}px "PingFang SC", sans-serif`;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText('上海敲麻', this.W / 2, this.H * (this.portrait ? 0.42 : 0.44));
         g.restore();
         const me = this.game.players[playerId];
         const right = this.game.players[(playerId + 1) % 4];
@@ -196,6 +238,7 @@ export class Renderer {
         }
         this.drawMyHand(me, playerId, opts);
         this.drawCenter(playerId);
+        this.drawWallBadge();
         this.drawFlowerFlash(playerId);
     }
     /** 补花提示：谁的什么花被亮出并补了牌，短暂高亮 */
@@ -231,7 +274,7 @@ export class Renderer {
         const { oppTw: tw, oppTh: th, gap, topY } = this.L;
         const total = tiles.length * (tw + gap) - gap;
         const x0 = this.W / 2 - total / 2;
-        this.drawPlayerTag(this.W / 2, topY - 30, p, myId);
+        this.drawSeat(this.W / 2, topY - 30, p, myId, 'center');
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + gap), topY, tw, th, p.hasQi);
         }
@@ -252,8 +295,9 @@ export class Renderer {
         const tiles = this.tilesOf(p);
         const { oppTw: tw, oppTh: th, gap } = this.L;
         const total = tiles.length * (tw + gap) - gap;
-        const x0 = cx - total / 2;
-        this.drawPlayerTag(cx, cy - 34, p, myId);
+        // 左右家的手牌贴着画布边缘向内排，避免超出屏幕被裁掉
+        const x0 = cx < this.W / 2 ? 10 : this.W - total - 10;
+        this.drawSeat(cx, cy - 34, p, myId, cx < this.W / 2 ? 'left' : 'right');
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + gap), cy, tw, th, p.hasQi);
         }
@@ -279,7 +323,7 @@ export class Renderer {
         const total = tiles.length * (tw + 2) - 2;
         const x0 = this.W / 2 - total / 2;
         const y0 = this.L.topY;
-        this.drawPlayerTag(this.W / 2, 32, p, myId);
+        this.drawSeat(this.W / 2, 32, p, myId, 'center');
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + 2), y0, tw, th, p.hasQi);
         }
@@ -315,7 +359,7 @@ export class Renderer {
             totalH = shown * (cardH * 0.62 + vGap) - vGap;
         }
         const startY = cy - totalH / 2;
-        this.drawPlayerTag(cx, startY - 24, p, myId);
+        this.drawSeat(cx, startY - 24, p, myId, cx < this.W / 2 ? 'left' : 'right');
         const x0 = cx - tw - 1.5;
         for (let i = 0; i < Math.min(tiles.length, rows * (compressed ? 1 : 2)); i++) {
             const c = compressed ? 0 : i < rows ? 0 : 1;
@@ -350,46 +394,138 @@ export class Renderer {
             this.drawFlowerTiles(p.flowers, cx - 16, my, fs, 2);
         }
     }
-    drawPlayerTag(cx, cy, p, myId) {
+    /**
+     * 座位卡片（JJ 麻将同款）：圆头像 + 昵称 + 豆/分 + 花数，
+     * 回合中的座位用金色描边和光晕高亮。
+     * @param align center 顶部对家居中；left/right 左右家贴边，避免被裁掉
+     */
+    drawSeat(cx, cy, p, myId, align) {
         const g = this.ctx;
+        const portrait = this.portrait;
         const isTurn = this.game.turn === p.id;
         const flowers = this.game.playerFlowers(p.id);
+        const cardW = portrait ? 108 : 126;
+        const cardH = portrait ? 34 : 36;
+        const x = align === 'center' ? cx - cardW / 2
+            : align === 'left' ? 6 : this.W - cardW - 6;
+        const y = cy - cardH / 2;
         g.save();
-        g.textAlign = 'center';
+        g.textAlign = 'left';
         g.textBaseline = 'middle';
+        // 卡片底
+        this.roundRect(x, y, cardW, cardH, cardH / 2);
+        g.fillStyle = 'rgba(4,26,19,.74)';
+        g.fill();
         if (isTurn) {
-            g.fillStyle = 'rgba(212,175,106,.14)';
-            g.beginPath();
-            g.arc(cx, cy, this.portrait ? 34 : 44, 0, Math.PI * 2);
+            const bg = g.createLinearGradient(x, y, x, y + cardH);
+            bg.addColorStop(0, 'rgba(255,228,160,.30)');
+            bg.addColorStop(1, 'rgba(212,175,106,.10)');
+            g.fillStyle = bg;
+            this.roundRect(x, y, cardW, cardH, cardH / 2);
             g.fill();
+            g.save();
+            g.shadowColor = 'rgba(227,192,122,.8)';
+            g.shadowBlur = 10;
             g.strokeStyle = C.gold;
-            g.lineWidth = 1.4;
+            g.lineWidth = 1.8;
+            this.roundRect(x, y, cardW, cardH, cardH / 2);
             g.stroke();
-        }
-        g.font = `600 ${this.portrait ? 12 : 13}px "PingFang SC", sans-serif`;
-        g.fillStyle = isTurn ? C.gold : C.text;
-        g.fillText(`P${p.id}${p.id === myId ? '（你）' : ''}`, cx, cy - 8);
-        // 第二行：已敲 / 手牌张数
-        g.font = `${this.portrait ? 10 : 10.5}px "PingFang SC", sans-serif`;
-        if (p.hasQi) {
-            g.fillStyle = '#e8b04b';
-            g.fillText('已敲', cx, cy + 6);
+            g.restore();
         }
         else {
-            // 注意：p.hand 是长度 34 的计数数组，不能直接取 .length
-            const tileCount = this.game.tilesInHand(p.id);
-            g.fillStyle = C.dim;
-            g.fillText(`${tileCount} 张`, cx, cy + 6);
+            g.strokeStyle = 'rgba(227,192,122,.42)';
+            g.lineWidth = 1;
+            this.roundRect(x, y, cardW, cardH, cardH / 2);
+            g.stroke();
         }
-        // 第三行：得分 + 花数（花数是门槛指标，必须让对手可见）
-        g.font = `${this.portrait ? 11 : 12}px "PingFang SC", sans-serif`;
-        g.fillStyle = p.score > 0 ? '#7dd6a0' : p.score < 0 ? '#e58a8a' : C.dim;
-        g.fillText(p.score > 0 ? `+${p.score}` : `${p.score}`, cx - 10, cy + 19);
+        // 头像
+        const r = cardH / 2 - 3;
+        const ax = x + r + 4;
+        this.drawAvatar(ax, cy, r, p, isTurn);
+        // 昵称
+        const tx = ax + r + 7;
+        g.font = `600 ${portrait ? 11 : 11.5}px "PingFang SC", sans-serif`;
+        g.fillStyle = isTurn ? C.gold : C.text;
+        g.fillText(SEAT_NAMES[p.id], tx, cy - 6);
+        // 分数 + 花数
+        g.font = `${portrait ? 9.5 : 10}px "PingFang SC", sans-serif`;
+        const scoreTxt = p.score > 0 ? `+${p.score}` : `${p.score}`;
+        g.fillStyle = p.score > 0 ? '#8be7b8' : p.score < 0 ? '#f2a3a3' : C.dim;
+        g.fillText(scoreTxt, tx, cy + 7);
+        const sw = g.measureText(scoreTxt).width;
         g.fillStyle =
             flowers >= this.game.config.ronMinFlowers ? C.gold
-                : flowers >= this.game.config.selfDrawMinFlowers ? '#7fc7a5'
-                    : '#d68a7a';
-        g.fillText(`花${flowers}`, cx + 14, cy + 19);
+                : flowers >= this.game.config.selfDrawMinFlowers ? '#8fd6b0'
+                    : '#e09a88';
+        g.fillText(`· 花${flowers}`, tx + sw + 3, cy + 7);
+        // 右侧状态：已敲 / 手牌张数
+        g.textAlign = 'right';
+        g.font = `${portrait ? 9.5 : 10}px "PingFang SC", sans-serif`;
+        if (p.hasQi) {
+            g.fillStyle = '#f2c15a';
+            g.fillText('已敲', x + cardW - 8, cy - 6);
+        }
+        else {
+            g.fillStyle = C.dim;
+            // 注意：p.hand 是长度 34 的计数数组，不能直接取 .length
+            g.fillText(`${this.game.tilesInHand(p.id)}张`, x + cardW - 8, cy - 6);
+        }
+        g.restore();
+    }
+    /** 座位头像：渐变底色 + 简易卡通脸，无图片资源也能有 JJ 的卡通感 */
+    drawAvatar(cx, cy, r, p, isTurn) {
+        const g = this.ctx;
+        const col = SEAT_COLORS[p.id];
+        g.save();
+        g.beginPath();
+        g.arc(cx, cy, r, 0, Math.PI * 2);
+        g.clip();
+        // 底色
+        const bg = g.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+        bg.addColorStop(0, col.bg1);
+        bg.addColorStop(1, col.bg2);
+        g.fillStyle = bg;
+        g.fillRect(cx - r, cy - r, r * 2, r * 2);
+        // 肩部
+        g.fillStyle = col.cloth;
+        g.beginPath();
+        g.arc(cx, cy + r * 0.98, r * 0.82, 0, Math.PI);
+        g.fill();
+        // 脸
+        g.fillStyle = '#f7d7b2';
+        g.beginPath();
+        g.arc(cx, cy + r * 0.02, r * 0.56, 0, Math.PI * 2);
+        g.fill();
+        // 头发
+        g.fillStyle = col.hair;
+        g.beginPath();
+        g.arc(cx, cy - r * 0.16, r * 0.60, Math.PI, Math.PI * 2);
+        g.fill();
+        // 眼睛 + 嘴
+        g.fillStyle = '#33261a';
+        g.beginPath();
+        g.arc(cx - r * 0.18, cy + r * 0.02, r * 0.075, 0, Math.PI * 2);
+        g.fill();
+        g.beginPath();
+        g.arc(cx + r * 0.18, cy + r * 0.02, r * 0.075, 0, Math.PI * 2);
+        g.fill();
+        g.strokeStyle = '#a8745a';
+        g.lineWidth = Math.max(1, r * 0.07);
+        g.beginPath();
+        g.arc(cx, cy + r * 0.20, r * 0.18, Math.PI * 0.18, Math.PI * 0.82);
+        g.stroke();
+        g.restore();
+        // 外圈：回合金色，已敲青绿，普通暖白
+        g.save();
+        if (isTurn) {
+            g.shadowColor = 'rgba(227,192,122,.85)';
+            g.shadowBlur = 9;
+        }
+        g.strokeStyle = isTurn ? C.gold : p.hasQi ? '#6fe0ae' : 'rgba(255,246,224,.78)';
+        g.lineWidth = isTurn ? 2.3 : 1.5;
+        g.beginPath();
+        g.arc(cx, cy, r, 0, Math.PI * 2);
+        g.stroke();
         g.restore();
     }
     // ---------- 自己的手牌 ----------
@@ -478,8 +614,38 @@ export class Renderer {
         const drawOne = (t, tx, dy = 0) => {
             const canSel = opts.selectable.has(t);
             const isSel = this.selected === t && canSel;
+            const isRec = canSel && opts.recommended === t;
             const lift = isSel ? th * 0.26 : canSel ? th * 0.1 : 0;
             this.drawTile(tx, handY - lift + dy, tw, th, t, isSel, canSel);
+            // 推荐弃牌（JJ 手牌上的「荐」标）：金色光晕 + 角标
+            if (isRec) {
+                g.save();
+                g.shadowColor = 'rgba(255,214,120,.85)';
+                g.shadowBlur = 10;
+                g.strokeStyle = 'rgba(255,226,150,.9)';
+                g.lineWidth = 1.5;
+                this.roundRect(tx + 1, handY - lift + dy + 1, tw - 2, th - 3, Math.max(3, tw * 0.12));
+                g.stroke();
+                g.restore();
+                const bw = Math.max(13, tw * 0.46);
+                const bh = Math.max(12, th * 0.19);
+                const bx = tx + tw - bw - 2;
+                const by = handY - lift + dy + 2;
+                g.save();
+                g.fillStyle = '#2f6fc4';
+                this.roundRect(bx, by, bw, bh, 3);
+                g.fill();
+                g.strokeStyle = 'rgba(255,255,255,.65)';
+                g.lineWidth = 0.8;
+                this.roundRect(bx, by, bw, bh, 3);
+                g.stroke();
+                g.fillStyle = '#ffffff';
+                g.font = `600 ${Math.max(8, bh * 0.78)}px "PingFang SC", sans-serif`;
+                g.textAlign = 'center';
+                g.textBaseline = 'middle';
+                g.fillText('荐', bx + bw / 2, by + bh / 2);
+                g.restore();
+            }
             if (isDiscardTurn && !canSel) {
                 g.save();
                 g.fillStyle = 'rgba(6,14,10,.42)';
@@ -609,10 +775,11 @@ export class Renderer {
         const portrait = this.portrait;
         const cx = this.W / 2;
         // ---- 牌河区：避开四家手牌、自己的副露/花牌与顶部玩家信息 ----
-        // 横屏时左右两家是横向大排手牌，牌河要落在它们内侧，否则会压住手牌
+        // 横屏时左右家的手牌贴边横排，牌河区要让开它们的实际宽度
+        const sideSpan = 13 * (L.oppTw + L.gap) + 12;
         const x0 = portrait
             ? Math.max(86, this.W * 0.215)
-            : Math.max(L.sideX + 170, this.W * 0.30);
+            : Math.max(L.sideX + 170, this.W * 0.30, 10 + sideSpan);
         const x1 = this.W - x0;
         const y0 = L.topY + L.oppTh + (portrait ? 50 : 46);
         // 下边界贴着手牌区上方留白：副露/花牌/听口提示越多，牌河区就越小
@@ -703,33 +870,78 @@ export class Renderer {
                 }
             }
         }
-        // ---- 牌墙进度：右上角小徽标，不压牌河也不挡玩家信息 ----
-        const barW = portrait ? Math.min(84, this.W * 0.22) : 96;
-        const barH = 4;
-        const bx = this.W - 12 - barW;
-        const by = 20;
+    }
+    /**
+     * 左上角「剩余牌张」信息牌：JJ 麻将同款位置，
+     * 大号数字 + 底部进度条，荒番时额外标注。
+     */
+    drawWallBadge() {
+        const g = this.ctx;
+        const portrait = this.portrait;
+        const remain = this.game.wall.remaining;
+        const w = portrait ? 94 : 106;
+        const h = 36;
+        const x = 8;
+        const y = 8;
         g.save();
-        g.textAlign = 'right';
-        g.textBaseline = 'middle';
-        g.font = `${portrait ? 10 : 11}px "PingFang SC", sans-serif`;
-        g.fillStyle = C.dim;
-        g.fillText(`牌墙 ${this.game.wall.remaining}`
-            + (this.game.huangFan > 0 ? ` · 荒番 ×${this.game.huangFan}` : ''), this.W - 12, by - 8);
-        g.fillStyle = 'rgba(0,0,0,.38)';
-        this.roundRect(bx, by, barW, barH, 2);
+        g.fillStyle = 'rgba(4,26,19,.80)';
+        this.roundRect(x, y, w, h, 9);
         g.fill();
-        const ratio = Math.min(1, this.game.wall.remaining / 144);
-        const bg = g.createLinearGradient(bx, 0, bx + barW, 0);
+        g.strokeStyle = 'rgba(227,192,122,.55)';
+        g.lineWidth = 1;
+        this.roundRect(x, y, w, h, 9);
+        g.stroke();
+        // 小牌背图标
+        const ix = x + 8;
+        const iy = y + 9;
+        const iw = 13;
+        const ih = 17;
+        const back = g.createLinearGradient(ix, iy, ix + iw, iy + ih);
+        back.addColorStop(0, '#54c99c');
+        back.addColorStop(1, '#1d8a63');
+        g.fillStyle = back;
+        this.roundRect(ix, iy, iw, ih, 3);
+        g.fill();
+        g.strokeStyle = 'rgba(255,246,220,.55)';
+        this.roundRect(ix, iy, iw, ih, 3);
+        g.stroke();
+        g.fillStyle = 'rgba(255,255,255,.30)';
+        this.roundRect(ix + 3, iy + 4, iw - 6, ih - 8, 1.5);
+        g.fill();
+        g.textAlign = 'left';
+        g.textBaseline = 'middle';
+        g.font = `${portrait ? 8.5 : 9}px "PingFang SC", sans-serif`;
+        g.fillStyle = C.dim;
+        g.fillText('剩余牌张', ix + iw + 7, y + 12);
+        g.font = `700 ${portrait ? 15 : 16}px "PingFang SC", sans-serif`;
+        g.fillStyle = C.gold;
+        g.fillText(`${remain}`, ix + iw + 7, y + 25);
+        // 荒番（有才显示）
+        if (this.game.huangFan > 0) {
+            g.textAlign = 'right';
+            g.font = `${portrait ? 8.5 : 9}px "PingFang SC", sans-serif`;
+            g.fillStyle = '#f2b0a0';
+            g.fillText(`荒番×${this.game.huangFan}`, x + w - 8, y + 12);
+        }
+        // 进度条
+        const bx = x + 8;
+        const bw = w - 16;
+        const by = y + h - 6;
+        g.fillStyle = 'rgba(0,0,0,.38)';
+        this.roundRect(bx, by, bw, 3, 1.5);
+        g.fill();
+        const ratio = Math.min(1, remain / 144);
+        const bar = g.createLinearGradient(bx, 0, bx + bw, 0);
         if (ratio > 0.3) {
-            bg.addColorStop(0, '#8a7040');
-            bg.addColorStop(1, C.gold);
+            bar.addColorStop(0, '#8a7040');
+            bar.addColorStop(1, C.gold);
         }
         else {
-            bg.addColorStop(0, '#7a2f22');
-            bg.addColorStop(1, '#c0392b');
+            bar.addColorStop(0, '#7a2f22');
+            bar.addColorStop(1, '#c0392b');
         }
-        g.fillStyle = bg;
-        this.roundRect(bx, by, Math.max(2, barW * ratio), barH, 2);
+        g.fillStyle = bar;
+        this.roundRect(bx, by, Math.max(2, bw * ratio), 3, 1.5);
         g.fill();
         g.restore();
     }
@@ -797,24 +1009,31 @@ export class Renderer {
         g.fillStyle = C.shadow;
         this.roundRect(x + 0.8, y + 1.6, w, h, r);
         g.fill();
+        // JJ 风格：亮翡翠绿牌背（已敲换成香槟金，一眼区分）
         const grad = g.createLinearGradient(x, y, x + w, y + h);
         if (qi) {
-            grad.addColorStop(0, '#4a7d67');
-            grad.addColorStop(1, '#2d5748');
+            grad.addColorStop(0, '#e8c37a');
+            grad.addColorStop(1, '#a8792f');
         }
         else {
-            grad.addColorStop(0, '#41678a');
-            grad.addColorStop(1, '#28455c');
+            grad.addColorStop(0, '#54c99c');
+            grad.addColorStop(1, '#1d8a63');
         }
         g.fillStyle = grad;
         this.roundRect(x, y, w, h - 2, r);
         g.fill();
-        g.strokeStyle = qi ? C.gold : '#6f92b0';
+        // 顶部受光边
+        g.globalAlpha = 0.55;
+        g.fillStyle = 'rgba(255,255,255,.75)';
+        this.roundRect(x + w * 0.08, y + 1.2, w * 0.84, Math.max(1.2, h * 0.06), 1);
+        g.fill();
+        g.globalAlpha = 1;
+        g.strokeStyle = qi ? 'rgba(255,240,190,.75)' : 'rgba(255,246,220,.55)';
         g.lineWidth = 0.6;
         this.roundRect(x + 0.3, y + 0.3, w - 0.6, h - 2.6, r);
         g.stroke();
-        g.globalAlpha = qi ? 0.4 : 0.16;
-        g.fillStyle = qi ? C.gold : '#ffffff';
+        g.globalAlpha = qi ? 0.42 : 0.24;
+        g.fillStyle = qi ? '#fff4cf' : 'rgba(255,255,255,.9)';
         this.roundRect(x + w * 0.24, y + h * 0.24, w * 0.52, h * 0.44, 2);
         g.fill();
         g.restore();

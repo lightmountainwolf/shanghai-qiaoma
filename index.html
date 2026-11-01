@@ -9,17 +9,17 @@
 <title>上海敲麻</title>
 <style>
   :root {
-    --felt: #1a4034;
-    --gold: #d4af6a;
+    --felt: #1d825f;
+    --gold: #e3c07a;
     --gold-dim: #9a7c48;
-    --text: #f0e6d2;
-    --text-dim: #a89a80;
+    --text: #f4ecda;
+    --text-dim: #b9ae94;
     --safe-t: env(safe-area-inset-top, 0px);
     --safe-b: env(safe-area-inset-bottom, 0px);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
-    background: #0d201a;
+    background: radial-gradient(120% 90% at 50% 0%, #123f31 0%, #0a211a 62%, #061410 100%);
     color: var(--text);
     font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
     height: 100%;
@@ -58,16 +58,27 @@
     white-space: nowrap;
   }
   .scores { display: flex; gap: 5px; flex: 1; justify-content: flex-end; }
+  /* 座位小卡：头像色点 + 昵称 + 分数（JJ 顶部信息条风格） */
   .score-box {
-    background: rgba(0,0,0,.28);
-    border: 1px solid rgba(154,124,72,.5);
-    border-radius: 5px;
-    padding: 3px 7px;
+    background: linear-gradient(180deg, rgba(10,48,36,.85), rgba(6,30,22,.85));
+    border: 1px solid rgba(227,192,122,.45);
+    border-radius: 9px;
+    padding: 3px 7px 3px 5px;
     font-size: 11px;
     min-width: 0;
-    text-align: center;
-    transition: border-color .2s, box-shadow .2s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: border-color .2s, box-shadow .2s, background .2s;
   }
+  .score-box .seat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 4px rgba(0,0,0,.5) inset;
+  }
+  .score-box .score-txt { min-width: 0; text-align: left; }
   .score-box .name {
     color: var(--text-dim);
     font-size: 9.5px;
@@ -83,19 +94,19 @@
   }
   .score-box.turn {
     border-color: var(--gold);
-    box-shadow: 0 0 8px rgba(212,175,106,.35);
-    background: rgba(212,175,106,.12);
+    box-shadow: 0 0 10px rgba(227,192,122,.45);
+    background: linear-gradient(180deg, rgba(120,88,30,.42), rgba(60,44,16,.42));
   }
 
   #canvas-wrap {
     flex: 1;
     min-height: 0;
     margin: 0 8px;
-    border: 1px solid var(--gold-dim);
-    border-radius: 10px;
+    border: 2px solid rgba(227,192,122,.62);
+    border-radius: 14px;
     position: relative;
     overflow: hidden;
-    box-shadow: inset 0 0 50px rgba(0,0,0,.4);
+    box-shadow: 0 0 18px rgba(227,192,122,.18), 0 8px 22px rgba(0,0,0,.35);
   }
   canvas {
     display: block;
@@ -114,22 +125,24 @@
     flex-shrink: 0;
     min-height: 0;
   }
-  /* 操作按钮：竖排「主字 + 小字」，接近主流麻将游戏的动作牌样式 */
+  /* 操作按钮：JJ 麻将同款金色圆角大按钮（主字 + 小字） */
   button {
-    background: linear-gradient(180deg, #e8d5a8, #c9ab6e);
-    color: #3a2c14;
-    border: none;
-    border-radius: 11px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.55) 0%, rgba(255,255,255,0) 46%),
+      linear-gradient(180deg, #ffe9b0 0%, #e9bf62 48%, #cf9a41 100%);
+    color: #4a2f0c;
+    border: 2px solid rgba(255,246,208,.72);
+    border-radius: 18px;
     padding: 0 16px;
-    min-width: 66px;
-    height: 54px;
+    min-width: 70px;
+    height: 58px;
     display: inline-flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 1px;
     cursor: pointer;
-    box-shadow: 0 3px 0 #9a7c48, 0 5px 10px rgba(0,0,0,.28);
+    box-shadow: 0 4px 0 #8a5f22, 0 6px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.65);
     transition: transform .06s, box-shadow .06s, opacity .15s;
     font-family: inherit;
     touch-action: manipulation;
@@ -154,29 +167,55 @@
     text-overflow: ellipsis;
   }
   button:active:not(:disabled) {
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #9a7c48, 0 2px 4px rgba(0,0,0,.2);
+    transform: translateY(3px);
+    box-shadow: 0 1px 0 #8a5f22, 0 2px 5px rgba(0,0,0,.25);
   }
   button:disabled { opacity: .35; cursor: not-allowed; }
-  button.secondary { background: linear-gradient(180deg, #7d9b8c, #5a7668); color: #fff; box-shadow: 0 3px 0 #3f574c, 0 5px 10px rgba(0,0,0,.28); }
+  /* 过 / 不胡：深青绿，和主操作区分开 */
+  button.secondary {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.30) 0%, rgba(255,255,255,0) 46%),
+      linear-gradient(180deg, #49a184 0%, #2f7d64 55%, #235f4c 100%);
+    color: #eafff6;
+    border-color: rgba(190,240,215,.6);
+    box-shadow: 0 4px 0 #17493a, 0 6px 14px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.35);
+  }
   button.secondary .sub { opacity: .85; }
   /* 「再来一局」这类文字较长的按钮 */
-  button.wide { min-width: 120px; }
+  button.wide { min-width: 132px; border-radius: 16px; }
   button.wide .ico { font-size: 15px; letter-spacing: 1px; }
 
-  /* 主要动作（敲 / 胡）：金色 + 呼吸高亮，确保一眼能看到 */
+  /* 敲：金色 + 呼吸高亮，确保一眼能看到 */
   button.primary {
-    background: linear-gradient(180deg, #ffe9a8, #e8bf5c);
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.65) 0%, rgba(255,255,255,0) 46%),
+      linear-gradient(180deg, #fff0be 0%, #f0c968 48%, #d89a3a 100%);
     color: #4a3510;
-    box-shadow: 0 3px 0 #a8802f, 0 0 14px rgba(232,191,92,.45);
-    min-width: 78px;
+    box-shadow: 0 4px 0 #a8802f, 0 0 16px rgba(240,201,104,.5), inset 0 1px 0 rgba(255,255,255,.7);
+    min-width: 82px;
     animation: popIn .18s ease-out, pulse 1.6s ease-in-out infinite;
   }
-  button.primary .ico { font-size: 22px; }
+  button.primary .ico { font-size: 23px; }
   button.primary .sub { font-size: 11px; opacity: .8; max-width: 110px; }
+  /* 胡：红金配色，全场最显眼 */
+  button.win {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.55) 0%, rgba(255,255,255,0) 46%),
+      linear-gradient(180deg, #ffb37a 0%, #ec5a3e 52%, #c8361f 100%);
+    color: #fff8e8;
+    border-color: #ffdca8;
+    box-shadow: 0 4px 0 #8d2a1a, 0 0 18px rgba(236,90,62,.55), inset 0 1px 0 rgba(255,255,255,.45);
+    min-width: 82px;
+    animation: popIn .18s ease-out, pulseWin 1.5s ease-in-out infinite;
+  }
+  button.win .ico { font-size: 24px; }
   @keyframes pulse {
-    0%, 100% { box-shadow: 0 3px 0 #a8802f, 0 0 10px rgba(232,191,92,.35); }
-    50% { box-shadow: 0 3px 0 #a8802f, 0 0 20px rgba(232,191,92,.7); }
+    0%, 100% { box-shadow: 0 4px 0 #a8802f, 0 0 10px rgba(240,201,104,.35), inset 0 1px 0 rgba(255,255,255,.7); }
+    50% { box-shadow: 0 4px 0 #a8802f, 0 0 22px rgba(240,201,104,.75), inset 0 1px 0 rgba(255,255,255,.7); }
+  }
+  @keyframes pulseWin {
+    0%, 100% { box-shadow: 0 4px 0 #8d2a1a, 0 0 10px rgba(236,90,62,.35), inset 0 1px 0 rgba(255,255,255,.45); }
+    50% { box-shadow: 0 4px 0 #8d2a1a, 0 0 24px rgba(236,90,62,.8), inset 0 1px 0 rgba(255,255,255,.45); }
   }
   @keyframes popIn {
     from { transform: scale(.86); opacity: .45; }
@@ -185,8 +224,9 @@
 
   #hint {
     text-align: center;
-    color: var(--text-dim);
+    color: var(--gold);
     font-size: 12px;
+    opacity: .92;
     padding: 0 10px 4px;
     flex-shrink: 0;
     min-height: 16px;

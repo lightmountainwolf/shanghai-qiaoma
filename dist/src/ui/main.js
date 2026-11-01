@@ -8,6 +8,9 @@ import { Renderer } from './render.js';
 import { tileName, tileChar } from '../core/tiles.js';
 import { DEFAULT_CONFIG } from '../core/scoring.js';
 const HUMAN = 0;
+/** 座位昵称（与 render.ts 的座位卡片保持一致） */
+const SEAT_NAMES = ['你', '阿飞', '小美', '老李'];
+const SEAT_DOTS = ['#e8b34a', '#5b9be0', '#e07cb0', '#57c48f'];
 const canvas = document.getElementById('board');
 const logEl = document.getElementById('log');
 const actionsEl = document.getElementById('actions');
@@ -17,6 +20,10 @@ const resultEl = document.getElementById('result');
 let game = new Game(DEFAULT_CONFIG);
 let renderer = new Renderer(canvas, game);
 const ais = [1, 2, 3].map(() => new MahjongAI());
+/** 只为玩家推荐「打哪张」，不参与实际出牌 */
+const advisor = new MahjongAI();
+/** 当前推荐的弃牌（-1 表示没有），用于手牌上的「荐」标 */
+let recommended = -1;
 let aiTimers = [];
 let selectable = new Set();
 let running = false;
@@ -71,10 +78,15 @@ function addLog(html) {
     logEl.scrollTop = logEl.scrollHeight;
 }
 function refresh() {
+    // 轮到玩家出牌时算一张推荐弃牌（JJ 手牌上的「荐」标）
+    recommended = -1;
+    if (game.phase === 'discard' && game.turn === HUMAN) {
+        recommended = advisor.bestDiscard(game, HUMAN);
+    }
     // 先渲染操作区（它会更新 selectable），再绘制画面，
     // 否则画面用的还是上一帧的可选状态
     renderActions();
-    renderer.draw(HUMAN, { selectable });
+    renderer.draw(HUMAN, { selectable, recommended });
     renderScores();
     startAnim();
 }
@@ -88,7 +100,7 @@ function startAnim() {
         return;
     animRaf = requestAnimationFrame(function step() {
         animRaf = 0;
-        renderer.draw(HUMAN, { selectable });
+        renderer.draw(HUMAN, { selectable, recommended });
         if (renderer.animActive())
             animRaf = requestAnimationFrame(step);
     });
@@ -96,8 +108,11 @@ function startAnim() {
 function renderScores() {
     scoresEl.innerHTML = game.players
         .map((p) => `<div class="score-box ${game.turn === p.id ? 'turn' : ''}">
-        <div class="name">P${p.id}${p.id === HUMAN ? '（你）' : ''}${p.hasQi ? ' 已敲' : ''}</div>
-        <div class="val">${p.score > 0 ? '+' : ''}${p.score}</div>
+        <span class="seat-dot" style="background:${SEAT_DOTS[p.id]}"></span>
+        <div class="score-txt">
+          <div class="name">${SEAT_NAMES[p.id]}${p.hasQi ? ' · 敲' : ''}</div>
+          <div class="val">${p.score > 0 ? '+' : ''}${p.score}</div>
+        </div>
       </div>`)
         .join('');
 }
@@ -118,7 +133,7 @@ function renderActions() {
                 descs.push({
                     ico: labelOf(o.type),
                     sub: tileName(tile),
-                    cls: '',
+                    cls: o.type === 'win' ? 'win' : '',
                     onClick: () => {
                         game.claim(HUMAN, { type: o.type, chow: o.chow });
                         addLog(`你${labelOf(o.type)} ${tileName(tile)}`);
@@ -155,7 +170,7 @@ function renderActions() {
         const canQi = acts.some((a) => a.type === 'qi');
         const myFlowers = game.playerFlowers(HUMAN);
         if (canWin) {
-            descs.push({ ico: '胡', sub: '', cls: 'primary', onClick: doWin });
+            descs.push({ ico: '胡', sub: '', cls: 'win', onClick: doWin });
             // 敲后胡为可选：提供「不胡」继续打牌
             if (game.pendingWinAfterQi) {
                 descs.push({
@@ -222,6 +237,10 @@ function renderActions() {
         }
         else {
             hint = `还没听牌 · 点一张牌打出 · ${myFlowers} 花`;
+        }
+        // JJ 风格：提示里直接给出推荐的弃牌
+        if (recommended >= 0 && selectable.has(recommended)) {
+            hint += ` · 荐 ${tileName(recommended)}`;
         }
     }
     updateActionBar(descs, hint);
