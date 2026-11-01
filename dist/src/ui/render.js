@@ -345,38 +345,25 @@ export class Renderer {
     drawSidePortrait(p, cx, cy, myId) {
         const tiles = this.tilesOf(p);
         const tw = this.L.oppTw;
-        const cardH = Math.min(this.L.oppTh, 15);
         const vGap = 3;
-        // 牌堆高度受可用空间限制，超出则压缩密度
+        const cols = tiles.length > 1 ? 2 : 1;
+        // 两列竖排；高度放不下时按行数压缩单牌高度，保证始终完整显示所有牌
         const maxH = Math.min(this.L.tileH * 3.2, (this.L.sideY - this.L.topY) * 0.62);
-        let rows = Math.ceil(tiles.length / 2);
+        const rows = Math.ceil(tiles.length / cols);
+        let cardH = Math.min(this.L.oppTh, 15);
         let totalH = rows * (cardH + vGap) - vGap;
-        const compressed = totalH > maxH;
-        if (compressed) {
-            // 压缩：改为单列密排，并限制最多显示 12 张
-            const shown = Math.min(tiles.length, 12);
-            rows = shown;
-            totalH = shown * (cardH * 0.62 + vGap) - vGap;
+        if (totalH > maxH) {
+            cardH = Math.max(5, (maxH - (rows - 1) * vGap) / rows);
+            totalH = rows * (cardH + vGap) - vGap;
         }
         const startY = cy - totalH / 2;
         this.drawSeat(cx, startY - 24, p, myId, cx < this.W / 2 ? 'left' : 'right');
-        const x0 = cx - tw - 1.5;
-        for (let i = 0; i < Math.min(tiles.length, rows * (compressed ? 1 : 2)); i++) {
-            const c = compressed ? 0 : i < rows ? 0 : 1;
-            const row = compressed ? i : i < rows ? i : i - rows;
-            const h = compressed ? cardH * 0.62 : cardH;
-            this.drawTileBack(x0 + c * (tw + 3), startY + row * (h + vGap), tw, h, p.hasQi);
-        }
-        // 超出部分用计数标注
-        if (tiles.length > (compressed ? rows : rows * 2)) {
-            const gg = this.ctx;
-            gg.save();
-            gg.font = '9px "PingFang SC", sans-serif';
-            gg.fillStyle = C.dim;
-            gg.textAlign = 'center';
-            gg.textBaseline = 'middle';
-            gg.fillText(`${tiles.length}张`, cx, startY + totalH + 9);
-            gg.restore();
+        const blockW = cols * (tw + 3) - 3;
+        const x0 = cx - blockW / 2;
+        for (let i = 0; i < tiles.length; i++) {
+            const c = Math.floor(i / rows);
+            const row = i % rows;
+            this.drawTileBack(x0 + c * (tw + 3), startY + row * (cardH + vGap), tw, cardH, p.hasQi);
         }
         if (p.melds.length) {
             const n = Math.min(p.melds.length, 3);
