@@ -7,7 +7,7 @@
  *   - 手牌自动缩放，保证 14 张始终在一屏内
  *   - 对手手牌竖排（牌背朝上，纵向堆叠），符合手机端习惯
  */
-import { isSuited, suitOf, rankOf, tileChar, ALL_KINDS, FLOWERS, } from '../core/tiles.js';
+import { isSuited, suitOf, rankOf, tileChar, tileName, ALL_KINDS, FLOWERS, } from '../core/tiles.js';
 import { meldTiles } from '../core/scoring.js';
 import { drawTileFace, drawTileBody, drawFlowerChip, } from './tileface.js';
 /** 牌面文字用的牌名（万筒条字牌与花牌） */
@@ -48,6 +48,18 @@ export class Renderer {
     /** 最近补花的事件（用于闪烁提示），{player, flower, at} */
     lastFlowerEvent = null;
     seenFlowerCount = 0;
+    /** 刚摸到的牌：单独摆在手牌最右侧，并带滑入动效 */
+    drawnTile = -1;
+    drawnAt = 0;
+    /** 最近一次弃牌的标识与动效起点（牌从出牌方滑入中央） */
+    lastDiscardKey = '';
+    discardFxAt = 0;
+    discardFxFrom = 0;
+    /** 点击了不能打出的牌时的红色反馈 */
+    invalidTile = -1;
+    invalidAt = 0;
+    /** 自己刚点击出牌的位置：让弃牌从这张牌的位置飞向中央，视觉更连贯 */
+    myDiscardFrom = null;
     /** 布局参数，随模式变化 */
     L;
     constructor(canvas, game) {
@@ -62,6 +74,35 @@ export class Renderer {
                 return h;
         }
         return null;
+    }
+    /** 新开一局时清空动效状态，避免残留上一局的动画 */
+    resetFx() {
+        this.drawnTile = -1;
+        this.drawnAt = 0;
+        this.lastDiscardKey = '';
+        this.discardFxAt = 0;
+        this.invalidTile = -1;
+        this.invalidAt = 0;
+        this.lastFlowerEvent = null;
+        this.seenFlowerCount = 0;
+        this.myDiscardFrom = null;
+    }
+    /** 点击了当前不能打出的牌：短暂红色描边反馈 */
+    flashInvalid(t) {
+        this.invalidTile = t;
+        this.invalidAt = Date.now();
+    }
+    /** 记录自己这次出牌的起点，弃牌会从该位置飞向中央 */
+    noteMyDiscard(x, y) {
+        this.myDiscardFrom = { x, y, at: Date.now() };
+    }
+    /** 是否还有动效在播放（主循环据此决定要不要继续重绘） */
+    animActive() {
+        const now = Date.now();
+        return (now - this.drawnAt < 300
+            || now - this.discardFxAt < 320
+            || now - this.invalidAt < 420
+            || (this.lastFlowerEvent !== null && now - this.lastFlowerEvent.at < 2200));
     }
     /** 根据视口重新计算画布尺寸与布局 */
     layout(availW, availH) {
@@ -122,6 +163,21 @@ export class Renderer {
             const e = evs[evs.length - 1];
             this.lastFlowerEvent = { player: e.player, flower: e.flower, at: Date.now() };
             this.seenFlowerCount = evs.length;
+        }
+        // 记录本次摸到的牌（用于单独摆放 + 滑入动效）
+        const jd = this.game.phase === 'discard' && this.game.turn === playerId
+            ? this.game.justDrawn : -1;
+        if (jd !== this.drawnTile) {
+            this.drawnTile = jd;
+            this.drawnAt = Date.now();
+        }
+        // 弃牌发生变化：让中央那张牌从出牌方位滑入，打牌更有「落子」感
+        const ld = this.game.lastDiscard;
+        const ldKey = ld ? `${ld.player}|${ld.tile}|${this.game.discardPiles[ld.player].length}` : '';
+        if (ldKey !== this.lastDiscardKey) {
+            this.lastDiscardKey = ldKey;
+            this.discardFxAt = ld ? Date.now() : 0;
+            this.discardFxFrom = ld ? ld.player : 0;
         }
         const grad = g.createRadialGradient(this.W / 2, this.H * 0.42, 40, this.W / 2, this.H / 2, Math.max(this.W, this.H) * 0.75);
         grad.addColorStop(0, C.feltA);
@@ -356,11 +412,35 @@ export class Renderer {
      */
     drawMyHand(me, playerId, opts) {
         const g = this.ctx;
-        const tiles = this.tilesOf(me);
-        const { tileW: tw, tileH: th, gap, handY } = this.L;
-        const n = tiles.length;
-        const total = n * (tw + gap) - gap;
-        const x0 = this.W / 2 - total / 2;
+        const all = this.tilesOf(me);
+        // 刚摸到的牌单独摆在最右侧，与手牌留出空隙（主流麻将游戏的做法，
+        // 让玩家一眼分清「哪张是新摸的」）
+        let hand = all;
+        let drawn = -1;
+        if (this.drawnTile >= 0) {
+            const idx = all.lastIndexOf(this.drawnTile);
+            if (idx >= 0) {
+                hand = all.slice(0, idx).concat(all.slice(idx + 1));
+                drawn = this.drawnTile;
+            }
+        }
+        const { tileW: maxTw, tileH: maxTh, gap } = this.L;
+        const n = hand.length + (drawn >= 0 ? 1 : 0);
+        // 按花色分组，组间留出更宽的缝，扫一眼就能找到某一门的牌
+        const groupGap = Math.max(5, maxTw * 0.26);
+        let extra = 0;
+        for (let i = 1; i < hand.length; i++) {
+            if (suitOf(hand[i]) !== suitOf(hand[i - 1]))
+                extra += groupGap;
+        }
+        if (drawn >= 0)
+            extra += groupGap * 1.4;
+        const avail = this.W - 16;
+        const tw = Math.max(10, Math.min(maxTw, (avail - extra - (n - 1) * gap) / Math.max(1, n)));
+        const th = Math.min(tw * 1.38, maxTh);
+        const handY = this.L.handY + (maxTh - th);
+        const total = n * tw + (n - 1) * gap + extra;
+        let x = this.W / 2 - total / 2;
         // 游标：从手牌顶部再往上一点开始
         let cursorY = handY - th - 5;
         // ① 副露（吃碰杠）—— 紧贴手牌，是打牌时最需要看的
@@ -398,20 +478,61 @@ export class Renderer {
             g.fillStyle = C.gold;
             g.textAlign = 'center';
             g.textBaseline = 'middle';
-            g.fillText(`已敲 · 听 ${me.qiTiles.map((t) => tileChar(t)).join(' ')}`, this.W / 2, cursorY);
+            g.fillText(`已敲 · 听 ${me.qiTiles.map((t) => tileName(t)).join(' ')}`, this.W / 2, cursorY);
             g.restore();
         }
         // ⑤ 手牌本体（最后画，保证盖住下方元素）
-        for (let i = 0; i < n; i++) {
-            const t = tiles[i];
-            const x = x0 + i * (tw + gap);
+        // 轮到自己出牌时，把「不能打出的牌」压暗，可选牌自然凸显
+        const isDiscardTurn = opts.selectable.size > 0;
+        const faceH = th - Math.max(2, th * 0.055);
+        const drawOne = (t, tx, dy = 0) => {
             const canSel = opts.selectable.has(t);
-            const lift = this.selected === t ? th * 0.24 : canSel ? th * 0.1 : 0;
-            this.drawTile(x, handY - lift, tw, th, t, this.selected === t, canSel);
+            const isSel = this.selected === t && canSel;
+            const lift = isSel ? th * 0.26 : canSel ? th * 0.1 : 0;
+            this.drawTile(tx, handY - lift + dy, tw, th, t, isSel, canSel);
+            if (isDiscardTurn && !canSel) {
+                g.save();
+                g.fillStyle = 'rgba(6,14,10,.42)';
+                this.roundRect(tx, handY - lift + dy, tw, faceH, Math.max(3, tw * 0.12));
+                g.fill();
+                g.restore();
+            }
+            // 点错 / 打不出的牌：红色描边闪一下
+            if (this.invalidTile === t) {
+                const age = Date.now() - this.invalidAt;
+                if (age < 380) {
+                    g.save();
+                    g.globalAlpha = 1 - age / 380;
+                    g.strokeStyle = '#e2685a';
+                    g.lineWidth = 2;
+                    this.roundRect(tx - 1, handY - lift + dy - 1, tw + 2, th + 1, 5);
+                    g.stroke();
+                    g.restore();
+                }
+            }
             this.hitAreas.push({
-                playerId, tile: t, x, y: handY - lift - 6,
+                playerId, tile: t, x: tx, y: handY - lift + dy - 6,
                 w: tw, h: th + 6, kind: 'hand',
             });
+        };
+        for (let i = 0; i < hand.length; i++) {
+            if (i > 0 && suitOf(hand[i]) !== suitOf(hand[i - 1]))
+                x += groupGap;
+            drawOne(hand[i], x);
+            x += tw + gap;
+        }
+        // 摸入的牌：独立摆放 + 从下方滑入 + 轻微金色光晕
+        if (drawn >= 0) {
+            x += groupGap * 1.4 - gap;
+            const age = Date.now() - this.drawnAt;
+            const p = Math.min(1, age / 260);
+            const e = 1 - Math.pow(1 - p, 3);
+            const rise = (1 - e) * 20; // 从下方滑入到最终位置
+            g.save();
+            g.shadowColor = 'rgba(212,175,106,.5)';
+            g.shadowBlur = 9;
+            drawOne(drawn, x, rise);
+            g.restore();
         }
     }
     /** 花数徽标：显示当前花数与门槛（y 由调用方按游标给出） */
@@ -489,10 +610,21 @@ export class Renderer {
         const pw = Math.max(14, tw * 0.4);
         const ph = Math.max(19, th * 0.38);
         this.drawDiscardPiles(cx, cy, pw, ph, tw, th);
-        // 中央高亮区：刚打出的那张牌
+        // 中央高亮区：刚打出的那张牌（从出牌方滑入中央，落子感更强）
         if (this.game.lastDiscard) {
             const dw = tw * 0.8, dh = th * 0.8;
-            this.drawTile(cx - dw / 2, cy - dh / 2, dw, dh, this.game.lastDiscard.tile, false, false, true);
+            const tx = cx - dw / 2, ty = cy - dh / 2;
+            const age = Date.now() - this.discardFxAt;
+            const p = this.discardFxAt ? Math.min(1, age / 300) : 1;
+            const e = 1 - Math.pow(1 - p, 3);
+            const src = this.anchorOf(this.discardFxFrom);
+            const x = src.x + (tx - src.x) * e;
+            const y = src.y + (ty - src.y) * e;
+            const s = 1.2 - 0.2 * e;
+            g.save();
+            g.globalAlpha = 0.5 + 0.5 * e;
+            this.drawTile(x + dw * (1 - s) / 2, y + dh * (1 - s) / 2, dw * s, dh * s, this.game.lastDiscard.tile, false, false, true);
+            g.restore();
         }
         // 牌墙进度条：中央上方
         const barW = Math.min(this.W * 0.42, 230);
@@ -531,6 +663,22 @@ export class Renderer {
         g.fillStyle = this.game.turn === 0 ? C.gold : C.dim;
         g.fillText(this.game.turn === 0 ? '轮到你出牌' : `轮到 P${this.game.turn}`, cx, by - 26);
         g.restore();
+    }
+    /** 各家手牌区域的大致中心，用于弃牌飞入动效的起点 */
+    anchorOf(pid) {
+        const L = this.L;
+        switch (pid) {
+            case 0: {
+                // 自己出牌：优先用刚点击的那张牌的位置，视觉上「牌从手里飞出去」
+                const m = this.myDiscardFrom;
+                if (m && Date.now() - m.at < 800)
+                    return { x: m.x, y: m.y };
+                return { x: this.W / 2, y: L.handY + L.tileH * 0.4 };
+            }
+            case 1: return { x: this.W - L.sideX, y: L.sideY };
+            case 2: return { x: this.W / 2, y: L.topY + 10 };
+            default: return { x: L.sideX, y: L.sideY };
+        }
     }
     /**
      * 绘制四家牌河（弃牌堆）。

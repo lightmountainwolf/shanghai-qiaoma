@@ -48,6 +48,7 @@ function newGame() {
     // 复用 renderer 实例，保留已算好的布局（换实例会导致画布尺寸丢失）
     renderer.game = game;
     renderer.selected = -1;
+    renderer.resetFx();
     selectable = new Set();
     resultEl.classList.remove('show');
     logEl.innerHTML = '';
@@ -75,6 +76,22 @@ function refresh() {
     renderActions();
     renderer.draw(HUMAN, { selectable });
     renderScores();
+    startAnim();
+}
+/**
+ * 动效循环：只在有动画（摸牌滑入 / 弃牌飞入 / 点错反馈 / 补花提示）时重绘，
+ * 动画结束自动停止，不常驻占用 CPU。
+ */
+let animRaf = 0;
+function startAnim() {
+    if (animRaf)
+        return;
+    animRaf = requestAnimationFrame(function step() {
+        animRaf = 0;
+        renderer.draw(HUMAN, { selectable });
+        if (renderer.animActive())
+            animRaf = requestAnimationFrame(step);
+    });
 }
 function renderScores() {
     scoresEl.innerHTML = game.players
@@ -84,136 +101,153 @@ function renderScores() {
       </div>`)
         .join('');
 }
+/** 上一次渲染的操作区签名：内容没变就不重建 DOM，避免按钮闪烁 */
+let lastActionsSig = '';
 function renderActions() {
-    actionsEl.innerHTML = '';
-    hintEl.textContent = '';
+    const descs = [];
+    let hint = '';
+    selectable = new Set();
     if (game.phase === 'game-over' || game.phase === 'win-settle') {
-        const b = document.createElement('button');
-        b.textContent = '再来一局';
-        b.onclick = newGame;
-        actionsEl.appendChild(b);
-        return;
+        descs.push({ ico: '再来一局', sub: '', cls: 'wide', onClick: newGame });
     }
-    if (game.phase === 'claim' && game.pending) {
+    else if (game.phase === 'claim' && game.pending) {
         const mine = game.pending.options.filter((o) => o.player === HUMAN);
         if (mine.length > 0) {
             const tile = game.pending.tile;
             for (const o of mine) {
-                const b = document.createElement('button');
-                b.textContent = `${labelOf(o.type)} ${tileName(tile)}`;
-                b.onclick = () => {
-                    game.claim(HUMAN, { type: o.type, chow: o.chow });
-                    addLog(`你${labelOf(o.type)} ${tileName(tile)}`);
+                descs.push({
+                    ico: labelOf(o.type),
+                    sub: tileName(tile),
+                    cls: '',
+                    onClick: () => {
+                        game.claim(HUMAN, { type: o.type, chow: o.chow });
+                        addLog(`你${labelOf(o.type)} ${tileName(tile)}`);
+                        selectable = new Set();
+                        afterAction();
+                    },
+                });
+            }
+            descs.push({
+                ico: '过',
+                sub: '',
+                cls: 'secondary',
+                onClick: () => {
+                    game.pass(HUMAN);
                     selectable = new Set();
                     afterAction();
-                };
-                actionsEl.appendChild(b);
-            }
-            const pass = document.createElement('button');
-            pass.className = 'secondary';
-            pass.textContent = '不要';
-            pass.onclick = () => {
-                game.pass(HUMAN);
-                selectable = new Set();
-                afterAction();
-            };
-            actionsEl.appendChild(pass);
-            hintEl.textContent = '轮到你声明';
-            return;
+                },
+            });
+            hint = '轮到你声明：吃 / 碰 / 杠 / 胡';
         }
-        // 若是AI 的声明，交给调度器
+        else {
+            // AI 的声明，交给调度器
+            scheduleAi();
+        }
+    }
+    else if (game.turn !== HUMAN) {
+        hint = `P${game.turn} 思考中…`;
         scheduleAi();
-        return;
-    }
-    if (game.turn !== HUMAN) {
-        scheduleAi();
-        return;
-    }
-    // 玩家回合
-    const acts = game.turnActions(HUMAN);
-    const canWin = acts.some((a) => a.type === 'win');
-    const canQi = acts.some((a) => a.type === 'qi');
-    const canAnkan = acts.some((a) => a.type === 'ankan');
-    const canShouminkan = acts.some((a) => a.type === 'shouminkan');
-    const myFlowers = game.playerFlowers(HUMAN);
-    if (canWin) {
-        const b = document.createElement('button');
-        b.textContent = '胡！';
-        b.style.background = 'linear-gradient(180deg,#f4d58d,#d4af6a)';
-        b.onclick = () => doWin();
-        actionsEl.appendChild(b);
-        // 敲后胡为可选：提供「不胡」继续打牌
-        if (game.pendingWinAfterQi) {
-            const nb = document.createElement('button');
-            nb.className = 'secondary';
-            nb.textContent = '不胡';
-            nb.onclick = () => {
-                game.pendingWinAfterQi = false;
-                addLog('你选择不胡，继续打牌');
-                refresh();
-            };
-            actionsEl.appendChild(nb);
-        }
-    }
-    if (canQi) {
-        const waits = game.qiTilesOf(HUMAN);
-        // 听口为空说明这手牌本身已成胡牌型（刚摸到听口牌），此时敲完即可胡
-        const waitText = waits.length > 0
-            ? `听 ${waits.map(tileChar).join(' ')}`
-            : '已成牌型';
-        const b = document.createElement('button');
-        // 敲是敲麻的核心动作，用醒目金色突出，和次要按钮区分开
-        b.className = 'primary';
-        b.textContent = `敲！${waitText}`;
-        b.onclick = () => doQi();
-        actionsEl.appendChild(b);
-    }
-    if (canAnkan) {
-        for (const a of acts.filter((x) => x.type === 'ankan')) {
-            const b = document.createElement('button');
-            b.className = 'secondary';
-            b.textContent = `暗杠 ${tileName(a.tile)}`;
-            b.onclick = () => {
-                game.act(HUMAN, { type: 'ankan', tile: a.tile });
-                addLog(`你暗杠 ${tileName(a.tile)}`);
-                afterAction();
-            };
-            actionsEl.appendChild(b);
-        }
-    }
-    if (canShouminkan) {
-        for (const a of acts.filter((x) => x.type === 'shouminkan')) {
-            const b = document.createElement('button');
-            b.className = 'secondary';
-            b.textContent = `补杠 ${tileName(a.tile)}`;
-            b.onclick = () => {
-                game.act(HUMAN, { type: 'shouminkan', tile: a.tile });
-                addLog(`你补杠 ${tileName(a.tile)}`);
-                afterAction();
-            };
-            actionsEl.appendChild(b);
-        }
-    }
-    // 弃牌：点牌选择
-    const discards = acts.filter((a) => a.type === 'discard');
-    selectable = new Set(discards.map((d) => d.tile));
-    // 引导提示：明确告诉玩家「现在能不能敲」，避免找不到按钮
-    if (canWin) {
-        hintEl.textContent = `可以胡了！你有 ${myFlowers} 花`;
-    }
-    else if (game.players[HUMAN].hasQi) {
-        const waits = game.players[HUMAN].qiTiles;
-        hintEl.textContent = `已敲 · 听 ${waits.map(tileChar).join(' ')} · ${myFlowers} 花`;
-    }
-    else if (canQi) {
-        const waits = game.qiTilesOf(HUMAN);
-        hintEl.textContent = waits.length > 0
-            ? `★ 可以敲了！点上面的「敲」锁定听口 · ${myFlowers} 花`
-            : `★ 点「敲」即可胡牌 · ${myFlowers} 花`;
     }
     else {
-        hintEl.textContent = `还没听牌 · 点一张牌打出 · ${myFlowers} 花`;
+        // 玩家回合
+        const acts = game.turnActions(HUMAN);
+        const canWin = acts.some((a) => a.type === 'win');
+        const canQi = acts.some((a) => a.type === 'qi');
+        const myFlowers = game.playerFlowers(HUMAN);
+        if (canWin) {
+            descs.push({ ico: '胡', sub: '', cls: 'primary', onClick: doWin });
+            // 敲后胡为可选：提供「不胡」继续打牌
+            if (game.pendingWinAfterQi) {
+                descs.push({
+                    ico: '不胡',
+                    sub: '',
+                    cls: 'secondary',
+                    onClick: () => {
+                        game.pendingWinAfterQi = false;
+                        addLog('你选择不胡，继续打牌');
+                        refresh();
+                    },
+                });
+            }
+        }
+        if (canQi) {
+            const waits = game.qiTilesOf(HUMAN);
+            descs.push({
+                ico: '敲',
+                // 听口为空说明这手牌本身已成胡牌型（刚摸到听口牌），此时敲完即可胡
+                sub: waits.length > 0 ? `听 ${waits.map(tileName).join(' ')}` : '已成牌型',
+                cls: 'primary',
+                onClick: doQi,
+            });
+        }
+        for (const a of acts.filter((x) => x.type === 'ankan')) {
+            descs.push({
+                ico: '杠',
+                sub: `暗 ${tileName(a.tile)}`,
+                cls: 'secondary',
+                onClick: () => {
+                    game.act(HUMAN, { type: 'ankan', tile: a.tile });
+                    addLog(`你暗杠 ${tileName(a.tile)}`);
+                    afterAction();
+                },
+            });
+        }
+        for (const a of acts.filter((x) => x.type === 'shouminkan')) {
+            descs.push({
+                ico: '杠',
+                sub: `补 ${tileName(a.tile)}`,
+                cls: 'secondary',
+                onClick: () => {
+                    game.act(HUMAN, { type: 'shouminkan', tile: a.tile });
+                    addLog(`你补杠 ${tileName(a.tile)}`);
+                    afterAction();
+                },
+            });
+        }
+        // 可打出的牌（点一下就直接打出）
+        selectable = new Set(acts.filter((a) => a.type === 'discard').map((d) => d.tile));
+        // 引导提示：明确告诉玩家「现在能不能敲」，避免找不到按钮
+        if (canWin) {
+            hint = `可以胡了！你有 ${myFlowers} 花`;
+        }
+        else if (game.players[HUMAN].hasQi) {
+            const waits = game.players[HUMAN].qiTiles;
+            hint = `已敲 · 听 ${waits.map(tileName).join(' ')} · ${myFlowers} 花`;
+        }
+        else if (canQi) {
+            const waits = game.qiTilesOf(HUMAN);
+            hint = waits.length > 0
+                ? `★ 可以敲了！点「敲」锁定听口 · ${myFlowers} 花`
+                : `★ 点「敲」即可胡牌 · ${myFlowers} 花`;
+        }
+        else {
+            hint = `还没听牌 · 点一张牌打出 · ${myFlowers} 花`;
+        }
     }
+    updateActionBar(descs, hint);
+}
+/** 渲染操作按钮（内容未变时复用已有 DOM，避免闪烁和重复入场动画） */
+function updateActionBar(descs, hint) {
+    const stateTag = [
+        game.phase, game.turn, game.justDrawn,
+        game.pending ? `${game.pending.from}:${game.pending.tile}` : '',
+        game.discardPiles.map((p) => p.length).join(','),
+    ].join('|');
+    const sig = stateTag + '#' + descs.map((d) => `${d.ico}|${d.sub}|${d.cls}`).join('~');
+    if (sig !== lastActionsSig) {
+        lastActionsSig = sig;
+        actionsEl.innerHTML = '';
+        for (const d of descs) {
+            const b = document.createElement('button');
+            if (d.cls)
+                b.className = d.cls;
+            b.innerHTML = `<span class="ico">${d.ico}</span>`
+                + (d.sub ? `<span class="sub">${d.sub}</span>` : '');
+            b.onclick = d.onClick;
+            actionsEl.appendChild(b);
+        }
+    }
+    hintEl.textContent = hint;
 }
 function labelOf(type) {
     switch (type) {
@@ -347,7 +381,7 @@ function scheduleAi() {
                 game.pass(o.player);
             }
             afterAction();
-        }, 500);
+        }, 420);
         aiTimers.push(t);
         return;
     }
@@ -381,41 +415,79 @@ function scheduleAi() {
             addLog(`P${pid} 打出 ${tileName(d.tile)}`);
         }
         afterAction();
-    }, 620);
+    }, 480 + Math.random() * 320); // 节奏带一点随机，避免机械感
     aiTimers.push(t);
 }
 // ---------- 交互 ----------
 /**
- * 统一处理鼠标 /触摸点击。
+ * 客户端坐标 → renderer 内部坐标。
  * renderer 的 hitAreas 用的是 CSS 像素坐标系（layout() 的输出），
- * 而 canvas.width 是 dpr 放大后的值，所以要用 rect 比例换算回CSS 像素。
+ * 而 canvas.width 是 dpr 放大后的值，所以要用 rect 比例换算回 CSS 像素。
  */
-function handlePointer(clientX, clientY) {
+function toCanvas(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: (clientX - rect.left) * (renderer.W / rect.width),
+        y: (clientY - rect.top) * (renderer.H / rect.height),
+    };
+}
+/**
+ * 出牌操作：按下「抬起」，松手即打出（主流麻将游戏的手感）。
+ * 松手时若手指已经移出该牌且没有上滑，则视为取消，避免误打。
+ */
+let press = null;
+canvas.addEventListener('pointerdown', (e) => {
     if (game.phase !== 'discard' || game.turn !== HUMAN)
         return;
-    const rect = canvas.getBoundingClientRect();
-    // CSS 像素 → renderer 内部坐标
-    const x = (clientX - rect.left) * (renderer.W / rect.width);
-    const y = (clientY - rect.top) * (renderer.H / rect.height);
-    const hit = renderer.hitTest(x, y);
-    if (!hit || hit.playerId !== HUMAN)
+    e.preventDefault();
+    const p = toCanvas(e.clientX, e.clientY);
+    const hit = renderer.hitTest(p.x, p.y);
+    if (!hit || hit.playerId !== HUMAN) {
+        renderer.selected = -1;
+        refresh();
         return;
-    if (renderer.selected === hit.tile) {
-        discardTile(hit.tile);
+    }
+    if (!selectable.has(hit.tile)) {
+        // 这张牌现在不能打（例如敲后必须保持听口）：红色闪一下作为反馈
+        renderer.flashInvalid(hit.tile);
+        refresh();
+        return;
+    }
+    press = { tile: hit.tile, rect: { x: hit.x, y: hit.y, w: hit.w, h: hit.h }, startY: p.y };
+    try {
+        canvas.setPointerCapture(e.pointerId);
+    }
+    catch { /* 老浏览器忽略 */ }
+    renderer.selected = hit.tile; // 按下立刻抬起，给出即时反馈
+    refresh();
+});
+canvas.addEventListener('pointerup', (e) => {
+    if (!press)
+        return;
+    const cur = press;
+    press = null;
+    const p = toCanvas(e.clientX, e.clientY);
+    const inTile = p.x >= cur.rect.x && p.x <= cur.rect.x + cur.rect.w
+        && p.y >= cur.rect.y && p.y <= cur.rect.y + cur.rect.h;
+    // 上滑超过 30px 也算确认出牌（配合手指遮挡牌面的情况）
+    const draggedUp = cur.startY - p.y > 30;
+    if (inTile || draggedUp) {
+        // 记录起点，让打出的牌从指尖位置飞向中央
+        renderer.noteMyDiscard(cur.rect.x + cur.rect.w / 2, cur.rect.y + cur.rect.h / 2);
+        discardTile(cur.tile);
     }
     else {
-        renderer.selected = hit.tile;
+        renderer.selected = -1;
         refresh();
     }
-}
-canvas.addEventListener('click', (e) => handlePointer(e.clientX, e.clientY));
-// 触摸：避免 300ms 延迟与双击缩放
-canvas.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    const t = e.changedTouches[0];
-    if (t)
-        handlePointer(t.clientX, t.clientY);
-}, { passive: false });
+});
+canvas.addEventListener('pointercancel', () => {
+    if (!press)
+        return;
+    press = null;
+    renderer.selected = -1;
+    refresh();
+});
 // 阻止双指缩放与双击放大，保持「像原生 App」的观感
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 let lastTouchEnd = 0;
