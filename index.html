@@ -41,6 +41,10 @@
     margin: 0 auto;
     width: 100%;
   }
+  /* 横屏（桌面 / 平板横放）放宽容器上限，牌可以画得更大 */
+  @media (orientation: landscape) and (min-width: 900px) {
+    #app { max-width: 1200px; }
+  }
 
   header {
     display: flex;

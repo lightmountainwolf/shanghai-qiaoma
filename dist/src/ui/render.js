@@ -54,6 +54,8 @@ export class Renderer {
     meldBlockH = 0;
     /** 自己手牌区（含副露/花牌/徽标/听口提示）的最高点，供中央牌河避让 */
     handTopY = 0;
+    /** 对家副露/花牌块的最低点，供中央牌河避让 */
+    oppTopBottom = 0;
     /** 最近补花的事件（用于闪烁提示），{player, flower, at} */
     lastFlowerEvent = null;
     seenFlowerCount = 0;
@@ -131,6 +133,7 @@ export class Renderer {
                 handY: this.H - th - 12,
                 oppTw: Math.min(26, this.W * 0.062),
                 oppTh: Math.min(32, this.W * 0.076),
+                oppMeldTw: Math.min(26, this.W * 0.062),
                 topY: 58,
                 sideY,
                 sideX: 44,
@@ -139,21 +142,33 @@ export class Renderer {
         else {
             // 横屏：同样按容器实际高宽，避免画布被非等比拉伸
             this.W = availW;
-            this.H = Math.max(320, availH);
-            const tw = Math.min(52, (this.W - 40 - 13 * 3) / 14);
+            this.H = availH;
+            // 横屏空间更宽裕，牌适当放大；同时给牌河与座位留出空间
+            const byW = (this.W - 40 - 13 * 3) / 14;
+            const byH = (this.H * 0.20) / 1.38;
+            const tw = Math.max(24, Math.min(64, byW, byH));
             const th = tw * 1.38;
+            const oppTw = Math.max(15, Math.min(26, tw * 0.40));
+            // 对手副露只用于展示，尺寸明显小于手牌：
+            // 否则矮横屏时对家两行副露会一路压到中央牌河（牌河徽标被叠住）
+            const oppMeldTw = Math.max(13, Math.min(30, tw * 0.52));
             this.L = {
                 tileW: tw, tileH: th, gap: 3,
                 // 手牌贴底，上方留出花牌/徽标空间
                 handY: this.H - th - 10,
-                oppTw: 18, oppTh: 26,
-                topY: 74,
+                oppTw, oppTh: oppTw * 1.44,
+                oppMeldTw,
+                topY: Math.max(54, Math.min(74, this.H * 0.13)),
                 sideY: this.H * 0.42,
-                sideX: Math.max(120, this.W * 0.13),
+                sideX: Math.max(112, this.W * 0.13),
             };
         }
         this.canvas.width = this.W;
         this.canvas.height = this.H;
+    }
+    /** 矮横屏（手机横放）：画布很矮，把花数徽标挪到左上角，给中央牌河腾高度 */
+    get compactChrome() {
+        return !this.portrait && this.H < 380;
     }
     draw(playerId, opts) {
         const g = this.ctx;
@@ -240,6 +255,10 @@ export class Renderer {
         this.drawMyHand(me, playerId, opts);
         this.drawCenter(playerId);
         this.drawWallBadge();
+        // 矮横屏：花数徽标挂在左上角「剩余牌张」右侧
+        if (this.compactChrome) {
+            this.drawFlowerCounter(playerId, me, 20, 122);
+        }
         this.drawFlowerFlash(playerId);
     }
     /** 补花提示：谁的什么花被亮出并补了牌，短暂高亮 */
@@ -270,40 +289,59 @@ export class Renderer {
         g.restore();
     }
     // ---------- 对手：横屏 ----------
-    // ---------- 对手副露：整组显示 ----------
-    /** 副露整组排开后需要的宽度（组内紧贴、组间留缝） */
-    meldSpan(p, tw, gap, groupGap) {
-        let n = 0;
-        for (const m of p.melds)
-            n += meldTiles(m).length;
-        return n * tw + (n - p.melds.length) * gap
-            + Math.max(0, p.melds.length - 1) * groupGap;
-    }
-    /** 完整画出每组副露的 3/4 张牌（之前每组只画一张，看不出吃碰杠了什么） */
-    drawOppMelds(p, x, y, tw, th) {
-        const gap = Math.max(1, Math.round(tw * 0.08));
-        const groupGap = Math.max(3, Math.round(tw * 0.22));
-        let cur = x;
+    // ---------- 对手副露：整组显示，放不下就换行 ----------
+    /**
+     * 计算副露排版：每组都保持完整的 3/4 张牌，绝不折叠成一张。
+     * 一行放不下就换到下一行（上下排布）。
+     */
+    meldBlock(p, baseTw, maxW) {
+        const gap = Math.max(1, Math.round(baseTw * 0.08));
+        const groupGap = Math.max(3, Math.round(baseTw * 0.24));
+        const vGap = 4;
+        const maxGroup = Math.max(1, ...p.melds.map((m) => meldTiles(m).length));
+        // 极窄的竖屏侧栏放不下一个杠（4 张）时，只把该家副露整体微调一点，
+        // 保证不越界；正常宽度下不缩放。
+        const mw = Math.max(8, Math.min(baseTw, (maxW - (maxGroup - 1) * gap) / maxGroup));
+        const mh = mw * 1.36;
+        const rows = [];
+        let groups = [];
+        let rowW = 0;
         for (const m of p.melds) {
-            for (const t of meldTiles(m)) {
-                this.drawTile(cur, y, tw, th, t, false);
-                cur += tw + gap;
+            const g = meldTiles(m);
+            const gw = g.length * mw + (g.length - 1) * gap;
+            if (groups.length && rowW + groupGap + gw > maxW) {
+                rows.push({ groups, w: rowW });
+                groups = [];
+                rowW = 0;
             }
-            cur += groupGap - gap;
+            rowW += (groups.length ? groupGap : 0) + gw;
+            groups.push(g);
         }
+        if (groups.length)
+            rows.push({ groups, w: rowW });
+        const w = rows.reduce((a, r) => Math.max(a, r.w), 0);
+        const h = rows.length ? rows.length * mh + (rows.length - 1) * vGap : 0;
+        return { rows, w, h, mw, mh, gap, groupGap, vGap };
     }
-    /** 按可用宽度算出副露单牌宽度，放不下就整体缩小 */
-    fitMeldTileW(p, tw, maxW) {
-        const gap = Math.max(1, Math.round(tw * 0.08));
-        const groupGap = Math.max(3, Math.round(tw * 0.22));
-        let n = 0;
-        for (const m of p.melds)
-            n += meldTiles(m).length;
-        const span = this.meldSpan(p, tw, gap, groupGap);
-        if (span <= maxW || n === 0)
-            return tw;
-        return Math.max(8, (maxW - (n - p.melds.length) * gap
-            - (p.melds.length - 1) * groupGap) / n);
+    /**
+     * 画出对手的全部副露：每行居中，行内保留组间距。
+     * @returns 占用的宽度与高度，供花牌与中央牌河避让
+     */
+    drawMeldBlock(p, centerX, topY, baseTw, maxW) {
+        const b = this.meldBlock(p, baseTw, maxW);
+        let y = topY;
+        for (const row of b.rows) {
+            let x = centerX - row.w / 2;
+            for (const g of row.groups) {
+                for (const t of g) {
+                    this.drawTile(x, y, b.mw, b.mh, t, false);
+                    x += b.mw + b.gap;
+                }
+                x += b.groupGap - b.gap;
+            }
+            y += b.mh + b.vGap;
+        }
+        return { w: b.w, h: b.h };
     }
     drawTopPlayer(p, myId) {
         const tiles = this.tilesOf(p);
@@ -314,17 +352,31 @@ export class Renderer {
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + gap), topY, tw, th, p.hasQi);
         }
+        const my = topY + th + 6;
         let meldW = 0;
+        let meldH = 0;
         if (p.melds.length) {
-            const mw = this.fitMeldTileW(p, tw, this.W - 40);
-            meldW = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
-            this.drawOppMelds(p, this.W / 2 - meldW / 2, topY + th + 6, mw, th);
+            const b = this.drawMeldBlock(p, this.W / 2, my, this.L.oppMeldTw, this.W - 32);
+            meldW = b.w;
+            meldH = b.h;
         }
-        // 对家补好的花牌
+        let bottom = my + meldH;
+        // 对家补好的花牌：优先摆在副露右侧，放不下就排在副露下方
         if (p.flowers.length) {
-            const fs = Math.max(11, tw * 0.8);
-            this.drawFlowerTiles(p.flowers, this.W / 2 + meldW / 2 + 8, topY + th + 6, fs, 1);
+            const fs = Math.max(11, this.L.oppMeldTw * 0.8);
+            const fw = p.flowers.length * (fs + 2) - 2;
+            const rightX = this.W / 2 + meldW / 2 + 8;
+            if (meldW > 0 && rightX + fw <= this.W - 10) {
+                this.drawFlowerTiles(p.flowers, rightX, my, fs, 1);
+                bottom = Math.max(bottom, my + fs);
+            }
+            else {
+                const fy = my + meldH + (meldH > 0 ? 4 : 0);
+                this.drawFlowerTiles(p.flowers, this.W / 2 - fw / 2, fy, fs, 1);
+                bottom = Math.max(bottom, fy + fs);
+            }
         }
+        this.oppTopBottom = bottom;
     }
     drawSidePlayer(p, cx, cy, myId) {
         const tiles = this.tilesOf(p);
@@ -336,16 +388,22 @@ export class Renderer {
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + gap), cy, tw, th, p.hasQi);
         }
+        const my = cy + th + 8;
+        let bottom = my;
         if (p.melds.length) {
-            // 副露向牌河方向展开，但留出中央区域
-            const maxW = cx < this.W / 2 ? this.W * 0.30 - x0 - 8 : x0 + total - this.W * 0.70 + 8;
-            const mw = this.fitMeldTileW(p, tw, Math.max(tw, maxW));
-            this.drawOppMelds(p, x0, cy + th + 8, mw, th);
+            // 副露以手牌块为中心向两侧展开，但不越过中央牌河
+            const center = x0 + total / 2;
+            const maxW = Math.max(tw * 3 + 8, cx < this.W / 2
+                ? 2 * (this.W * 0.30 - 6 - center)
+                : 2 * (center - this.W * 0.70 - 6));
+            const b = this.drawMeldBlock(p, center, my, this.L.oppMeldTw, maxW);
+            bottom = my + b.h;
         }
-        // 左右家补好的花牌
+        // 左右家补好的花牌（横排排在副露下方）
         if (p.flowers.length) {
-            const fs = Math.max(11, tw * 0.8);
-            this.drawFlowerTiles(p.flowers, x0, cy + th + 8 + th + 6, fs, 1);
+            const fs = Math.max(11, this.L.oppMeldTw * 0.8);
+            const fw = p.flowers.length * (fs + 2) - 2;
+            this.drawFlowerTiles(p.flowers, x0 + total / 2 - fw / 2, bottom + 4, fs, 1);
         }
     }
     // ---------- 对手：竖屏（牌竖排，更接近手机习惯） ----------
@@ -363,18 +421,30 @@ export class Renderer {
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + 2), y0, tw, th, p.hasQi);
         }
+        const my = y0 + th + 5;
         let meldW = 0;
+        let bottom = my;
         if (p.melds.length) {
-            // 整组副露完整显示（一条二条三条 要能看出是顺子，而不是只露一张）
-            const mw = this.fitMeldTileW(p, Math.min(tw, this.L.oppTw), availW);
-            meldW = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
-            this.drawOppMelds(p, this.W / 2 - meldW / 2, y0 + th + 5, mw, mw * 1.35);
+            // 整组副露完整显示（一条二条三条 要能看出是顺子），放不下就换行
+            const b = this.drawMeldBlock(p, this.W / 2, my, Math.min(tw, this.L.oppTw), availW);
+            meldW = b.w;
+            bottom = my + b.h;
         }
-        // 对家补好的花牌（横向排在副露右侧，因为上方空间是横向的）
+        // 对家补好的花牌：副露右侧放得下就排右侧，否则排到副露下方
         if (p.flowers.length) {
             const fs = Math.max(11, Math.min(tw, this.L.oppTw) * 0.8);
-            this.drawFlowerTiles(p.flowers, this.W / 2 + meldW / 2 + 8, y0 + th + 5, fs, 1);
+            const fw = p.flowers.length * (fs + 2) - 2;
+            const rightX = this.W / 2 + meldW / 2 + 8;
+            if (meldW > 0 && rightX + fw <= this.W - 8) {
+                this.drawFlowerTiles(p.flowers, rightX, my, fs, 1);
+            }
+            else {
+                const fy = bottom + (meldW > 0 ? 4 : 0);
+                this.drawFlowerTiles(p.flowers, this.W / 2 - fw / 2, fy, fs, 1);
+                bottom = fy + fs;
+            }
         }
+        this.oppTopBottom = bottom;
     }
     drawSidePortrait(p, cx, cy, myId) {
         const tiles = this.tilesOf(p);
@@ -399,32 +469,19 @@ export class Renderer {
             const row = i % rows;
             this.drawTileBack(x0 + c * (tw + 3), startY + row * (cardH + vGap), tw, cardH, p.hasQi);
         }
+        const my = startY + totalH + 20;
+        let bottom = my;
         if (p.melds.length) {
-            const my = startY + totalH + 20;
-            // 中央牌河从 W*0.215 开始，副露不能压过去
-            const maxW = Math.max(40, (Math.max(86, this.W * 0.215) - 4 - cx) * 2);
-            const mw = this.fitMeldTileW(p, tw + 2, maxW);
-            const span = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
-            if (span <= maxW) {
-                // 放得下就整组显示
-                this.drawOppMelds(p, cx - span / 2, my, mw, mw * 1.3);
-            }
-            else {
-                // 空间太窄：退回每组一张代表牌，但不再画出多余的空位
-                const n = Math.min(p.melds.length, 3);
-                const mw2 = tw + 2;
-                const totalM = n * (mw2 + 3) - 3;
-                const mx = cx - totalM / 2;
-                for (let i = 0; i < n; i++) {
-                    this.drawTile(mx + i * (mw2 + 3), my, mw2, mw2 * 1.3, p.melds[i].tile, false);
-                }
-            }
+            // 中央牌河从 W*0.215 开始：副露以手牌块为中心排，放不下就上下换行
+            const riverStart = Math.max(86, this.W * 0.215);
+            const maxW = Math.max(40, 2 * (riverStart - 6 - cx));
+            const b = this.drawMeldBlock(p, cx, my, tw + 2, maxW);
+            bottom = my + b.h;
         }
         // 左右家补好的花牌（摆在副露下方）
         if (p.flowers.length) {
             const fs = Math.max(11, tw * 0.85);
-            const my = p.melds.length > 0 ? startY + totalH + 20 + (tw + 2) * 1.3 + 6 : startY + totalH + 20;
-            this.drawFlowerTiles(p.flowers, cx - 16, my, fs, 2);
+            this.drawFlowerTiles(p.flowers, cx - 16, bottom + 6, fs, 2);
         }
     }
     /**
@@ -599,7 +656,8 @@ export class Renderer {
         const total = n * tw + (n - 1) * gap + extra;
         let x = this.W / 2 - total / 2;
         // 游标：从手牌顶部再往上一点开始
-        let cursorY = handY - th - 5;
+        // 横屏高度更紧，留出的空白更少，把空间让给中央牌河
+        let cursorY = handY - (this.portrait ? th + 5 : th * 0.42 + 5);
         // ① 副露（吃碰杠）—— 紧贴手牌，是打牌时最需要看的
         const meldH = this.drawMyMelds(me, cursorY);
         this.meldBlockH = meldH;
@@ -625,9 +683,11 @@ export class Renderer {
             cursorY -= flowerH + 2;
         }
         this.flowerBlockH = flowerH;
-        // ③ 花数徽标
-        this.drawFlowerCounter(playerId, me, cursorY - 13);
-        cursorY -= 28;
+        // ③ 花数徽标（矮横屏时挪到左上角，见 draw()，给中央牌河腾出高度）
+        if (!this.compactChrome) {
+            this.drawFlowerCounter(playerId, me, cursorY - 13);
+            cursorY -= 28;
+        }
         // ④ 已敲听口提示
         if (me.hasQi) {
             g.save();
@@ -663,7 +723,8 @@ export class Renderer {
                 const bw = Math.max(13, tw * 0.46);
                 const bh = Math.max(12, th * 0.19);
                 const bx = tx + tw - bw - 2;
-                const by = handY - lift + dy + 2;
+                // 角标放在牌面上方，不遮挡牌面图案
+                const by = handY - lift + dy - bh - 1;
                 g.save();
                 g.fillStyle = '#2f6fc4';
                 this.roundRect(bx, by, bw, bh, 3);
@@ -725,7 +786,7 @@ export class Renderer {
         }
     }
     /** 花数徽标：显示当前花数与门槛（y 由调用方按游标给出） */
-    drawFlowerCounter(playerId, p, y) {
+    drawFlowerCounter(playerId, p, y, boxLeft) {
         const g = this.ctx;
         const game = this.game;
         const fb = game.flowerBreakdown(playerId);
@@ -737,7 +798,8 @@ export class Renderer {
         g.textBaseline = 'middle';
         const label = `花 ${total} · 自摸≥${cfg.selfDrawMinFlowers} · 点炮≥${cfg.ronMinFlowers}`;
         const w = g.measureText(label).width;
-        const cx = this.W / 2;
+        // boxLeft 给了就左对齐到该位置，否则居中
+        const cx = boxLeft !== undefined ? boxLeft + 10 + w / 2 : this.W / 2;
         g.fillStyle = 'rgba(0,0,0,.45)';
         this.roundRect(cx - w / 2 - 10, y - 11, w + 20, 22, 7);
         g.fill();
@@ -814,9 +876,12 @@ export class Renderer {
             ? Math.max(86, this.W * 0.215)
             : Math.max(L.sideX + 170, this.W * 0.30, 10 + sideSpan);
         const x1 = this.W - x0;
-        const y0 = L.topY + L.oppTh + (portrait ? 50 : 46);
+        const y1 = this.handTopY - 10;
+        const y0raw = Math.max(L.topY + L.oppTh + (portrait ? 50 : 46), this.oppTopBottom + 10);
+        // 与花数徽标冲突时，宁可让牌河贴近对家副露，也不能压住自己的手牌信息
+        const y0 = Math.min(y0raw, y1 - 24);
         // 下边界贴着手牌区上方留白：副露/花牌/听口提示越多，牌河区就越小
-        const y1 = Math.max(y0 + 44, this.handTopY - 12);
+        // 横屏很矮时也优先保住花数徽标，不为了牌河强行越过手牌区
         const cy = (y0 + y1) / 2;
         // 单张弃牌的尺寸：按牌河区反推，保证上下各 4 行、左右各 3 列都放得下
         const rw = Math.max(10, Math.min(portrait ? 19 : 24, Math.min((x1 - x0) / 15.5, (y1 - y0) / 11.5)));
