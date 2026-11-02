@@ -270,6 +270,41 @@ export class Renderer {
         g.restore();
     }
     // ---------- 对手：横屏 ----------
+    // ---------- 对手副露：整组显示 ----------
+    /** 副露整组排开后需要的宽度（组内紧贴、组间留缝） */
+    meldSpan(p, tw, gap, groupGap) {
+        let n = 0;
+        for (const m of p.melds)
+            n += meldTiles(m).length;
+        return n * tw + (n - p.melds.length) * gap
+            + Math.max(0, p.melds.length - 1) * groupGap;
+    }
+    /** 完整画出每组副露的 3/4 张牌（之前每组只画一张，看不出吃碰杠了什么） */
+    drawOppMelds(p, x, y, tw, th) {
+        const gap = Math.max(1, Math.round(tw * 0.08));
+        const groupGap = Math.max(3, Math.round(tw * 0.22));
+        let cur = x;
+        for (const m of p.melds) {
+            for (const t of meldTiles(m)) {
+                this.drawTile(cur, y, tw, th, t, false);
+                cur += tw + gap;
+            }
+            cur += groupGap - gap;
+        }
+    }
+    /** 按可用宽度算出副露单牌宽度，放不下就整体缩小 */
+    fitMeldTileW(p, tw, maxW) {
+        const gap = Math.max(1, Math.round(tw * 0.08));
+        const groupGap = Math.max(3, Math.round(tw * 0.22));
+        let n = 0;
+        for (const m of p.melds)
+            n += meldTiles(m).length;
+        const span = this.meldSpan(p, tw, gap, groupGap);
+        if (span <= maxW || n === 0)
+            return tw;
+        return Math.max(8, (maxW - (n - p.melds.length) * gap
+            - (p.melds.length - 1) * groupGap) / n);
+    }
     drawTopPlayer(p, myId) {
         const tiles = this.tilesOf(p);
         const { oppTw: tw, oppTh: th, gap, topY } = this.L;
@@ -279,17 +314,16 @@ export class Renderer {
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + gap), topY, tw, th, p.hasQi);
         }
+        let meldW = 0;
         if (p.melds.length) {
-            const mx = this.W / 2 - (p.melds.length * (tw + 6)) / 2;
-            for (let i = 0; i < p.melds.length; i++) {
-                this.drawTile(mx + i * (tw + 6), topY + th + 6, tw, th, p.melds[i].tile, false);
-            }
+            const mw = this.fitMeldTileW(p, tw, this.W - 40);
+            meldW = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
+            this.drawOppMelds(p, this.W / 2 - meldW / 2, topY + th + 6, mw, th);
         }
         // 对家补好的花牌
         if (p.flowers.length) {
             const fs = Math.max(11, tw * 0.8);
-            const totalM = p.melds.length > 0 ? p.melds.length * (tw + 6) - 6 : 0;
-            this.drawFlowerTiles(p.flowers, this.W / 2 + totalM / 2 + 8, topY + th + 6, fs, 1);
+            this.drawFlowerTiles(p.flowers, this.W / 2 + meldW / 2 + 8, topY + th + 6, fs, 1);
         }
     }
     drawSidePlayer(p, cx, cy, myId) {
@@ -303,9 +337,10 @@ export class Renderer {
             this.drawTileBack(x0 + i * (tw + gap), cy, tw, th, p.hasQi);
         }
         if (p.melds.length) {
-            for (let i = 0; i < p.melds.length; i++) {
-                this.drawTile(x0 + i * (tw + 5), cy + th + 8, tw, th, p.melds[i].tile, false);
-            }
+            // 副露向牌河方向展开，但留出中央区域
+            const maxW = cx < this.W / 2 ? this.W * 0.30 - x0 - 8 : x0 + total - this.W * 0.70 + 8;
+            const mw = this.fitMeldTileW(p, tw, Math.max(tw, maxW));
+            this.drawOppMelds(p, x0, cy + th + 8, mw, th);
         }
         // 左右家补好的花牌
         if (p.flowers.length) {
@@ -328,19 +363,17 @@ export class Renderer {
         for (let i = 0; i < tiles.length; i++) {
             this.drawTileBack(x0 + i * (tw + 2), y0, tw, th, p.hasQi);
         }
+        let meldW = 0;
         if (p.melds.length) {
-            const mw = Math.min(tw + 4, (availW - (p.melds.length - 1) * 4) / p.melds.length);
-            const totalM = p.melds.length * (mw + 4) - 4;
-            const mx = this.W / 2 - totalM / 2;
-            for (let i = 0; i < p.melds.length; i++) {
-                this.drawTile(mx + i * (mw + 4), y0 + th + 5, mw, mw * 1.35, p.melds[i].tile, false);
-            }
+            // 整组副露完整显示（一条二条三条 要能看出是顺子，而不是只露一张）
+            const mw = this.fitMeldTileW(p, Math.min(tw, this.L.oppTw), availW);
+            meldW = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
+            this.drawOppMelds(p, this.W / 2 - meldW / 2, y0 + th + 5, mw, mw * 1.35);
         }
         // 对家补好的花牌（横向排在副露右侧，因为上方空间是横向的）
         if (p.flowers.length) {
             const fs = Math.max(11, Math.min(tw, this.L.oppTw) * 0.8);
-            const totalM = p.melds.length > 0 ? p.melds.length * (tw + 4) - 4 : 0;
-            this.drawFlowerTiles(p.flowers, this.W / 2 + totalM / 2 + 8, y0 + th + 5, fs, 1);
+            this.drawFlowerTiles(p.flowers, this.W / 2 + meldW / 2 + 8, y0 + th + 5, fs, 1);
         }
     }
     drawSidePortrait(p, cx, cy, myId) {
@@ -367,12 +400,24 @@ export class Renderer {
             this.drawTileBack(x0 + c * (tw + 3), startY + row * (cardH + vGap), tw, cardH, p.hasQi);
         }
         if (p.melds.length) {
-            const n = Math.min(p.melds.length, 3);
-            const mw = tw + 2;
-            const totalM = n * (mw + 3) - 3;
-            const mx = cx - totalM / 2;
-            for (let i = 0; i < n; i++) {
-                this.drawTile(mx + i * (mw + 3), startY + totalH + 20, mw, mw * 1.3, p.melds[i].tile, false);
+            const my = startY + totalH + 20;
+            // 中央牌河从 W*0.215 开始，副露不能压过去
+            const maxW = Math.max(40, (Math.max(86, this.W * 0.215) - 4 - cx) * 2);
+            const mw = this.fitMeldTileW(p, tw + 2, maxW);
+            const span = this.meldSpan(p, mw, Math.max(1, Math.round(mw * 0.08)), Math.max(3, Math.round(mw * 0.22)));
+            if (span <= maxW) {
+                // 放得下就整组显示
+                this.drawOppMelds(p, cx - span / 2, my, mw, mw * 1.3);
+            }
+            else {
+                // 空间太窄：退回每组一张代表牌，但不再画出多余的空位
+                const n = Math.min(p.melds.length, 3);
+                const mw2 = tw + 2;
+                const totalM = n * (mw2 + 3) - 3;
+                const mx = cx - totalM / 2;
+                for (let i = 0; i < n; i++) {
+                    this.drawTile(mx + i * (mw2 + 3), my, mw2, mw2 * 1.3, p.melds[i].tile, false);
+                }
             }
         }
         // 左右家补好的花牌（摆在副露下方）
