@@ -110,9 +110,9 @@ export class Renderer {
         const portrait = availH > availW * 1.05;
         this.portrait = portrait;
         if (portrait) {
-            // 竖屏：牌桌比例接近 9:13，手牌区占底部约 22%
-            this.H = Math.max(560, Math.min(availH, availW * 1.45));
+            // 竖屏：画布必须与容器等比，否则 CSS 拉伸会让牌面/头像变形
             this.W = availW;
+            this.H = Math.max(400, availH);
             const maxHandW = this.W - 16;
             // 14 张 + 13 间隙 必须放得下
             let tw = (maxHandW - 13 * 2) / 14;
@@ -137,8 +137,9 @@ export class Renderer {
             };
         }
         else {
+            // 横屏：同样按容器实际高宽，避免画布被非等比拉伸
             this.W = availW;
-            this.H = Math.min(availH, availW * 0.62);
+            this.H = Math.max(320, availH);
             const tw = Math.min(52, (this.W - 40 - 13 * 3) / 14);
             const th = tw * 1.38;
             this.L = {

@@ -557,6 +557,9 @@ export class Game {
             }
             case 'win': {
                 // 自摸：本回合 drawFor 设置了 justDrawn；点炮：来自弃牌堆，justDrawn = -1
+                // 防御性校验：必须已敲、牌型可胡、花数达标，否则忽略（点炮走 claim 路径）
+                if (!this.canWinNow(playerId))
+                    return;
                 const selfDraw = this.justDrawn >= 0;
                 this.doWin(playerId, selfDraw ? null : (this.lastDiscard?.player ?? null), false);
                 return;
@@ -639,13 +642,32 @@ export class Game {
         p.hand[tile]--;
         return ok;
     }
+    /** 声明优先级：胡 > 碰 > 杠 > 吃 */
+    static claimRank(t) {
+        return t === 'win' ? 0 : t === 'pon' ? 1 : t === 'minkan' ? 2 : 3;
+    }
     /** 执行声明（吃碰杠胡） */
     claim(playerId, opt) {
         if (!this.pending)
             return false;
-        const found = this.pending.options.find((o) => o.player === playerId && o.type === opt.type);
+        const found = this.pending.options.find((o) => {
+            if (o.player !== playerId || o.type !== opt.type)
+                return false;
+            // 同一张牌可能有多种吃法：必须按玩家选择的组合匹配，
+            // 否则点第二/第三种吃法时会被执行成第一种，吃到另一组牌
+            if (opt.type !== 'chow' || !opt.chow)
+                return true;
+            return !!o.chow && o.chow.length === opt.chow.length
+                && o.chow.every((t, i) => t === opt.chow[i]);
+        });
         if (!found)
             return false;
+        // 不允许低优先级声明抢在更高优先级的声明之前执行
+        // （例如别人已经可以胡，自己点「碰」不能把这次胡牌顶掉）
+        const rank = Game.claimRank(opt.type);
+        if (this.pending.options.some((o) => o.player !== playerId && Game.claimRank(o.type) < rank)) {
+            return false;
+        }
         const { from, tile } = this.pending;
         this.pending = null;
         this.phase = 'discard';
@@ -731,11 +753,16 @@ export class Game {
         let totalLoss = 0;
         for (const cid of claimerIds) {
             const p = this.players[cid];
+            // 一炮多响：同一张弃牌被多家同时胡，只为算牌型临时加进手牌，
+            // 算完立刻归还，避免同一张牌在每个胡家手里各多出一份（牌张不守恒）
             p.hand[tile]++;
             const r = calculateWin(this.buildCtx(p, false, false));
+            p.hand[tile]--;
             results.push(r);
             totalLoss += r.points;
         }
+        // 这张弃牌从放炮者牌河移走后，归到第一家（保持牌张总数不变）
+        this.players[claimerIds[0]].hand[tile]++;
         this.players[from].score -= totalLoss;
         for (let i = 0; i < claimerIds.length; i++) {
             this.players[claimerIds[i]].score += results[i].points;

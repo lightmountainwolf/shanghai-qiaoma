@@ -57,6 +57,8 @@ function newGame() {
     renderer.selected = -1;
     renderer.resetFx();
     selectable = new Set();
+    press = null;
+    lastActionsSig = '';
     resultEl.classList.remove('show');
     logEl.innerHTML = '';
     loggedFlowers = 0;
@@ -126,13 +128,27 @@ function renderActions() {
         descs.push({ ico: '再来一局', sub: '', cls: 'wide', onClick: newGame });
     }
     else if (game.phase === 'claim' && game.pending) {
+        // 与 afterAction 一致：优先级更高的 AI 声明先处理，玩家不抢优先级
+        if (game.pending.options[0].player !== HUMAN) {
+            hint = `P${game.pending.options[0].player} 处理声明中…`;
+            updateActionBar(descs, hint);
+            scheduleAi();
+            return;
+        }
         const mine = game.pending.options.filter((o) => o.player === HUMAN);
         if (mine.length > 0) {
             const tile = game.pending.tile;
             for (const o of mine) {
+                // 同一张牌可能有多种吃法：按钮小字写出完整顺子（如「二万三四」），
+                // 否则几个「吃 四万」长得一样，玩家无法选择
+                let sub = tileName(tile);
+                if (o.type === 'chow' && o.chow) {
+                    const group = [...o.chow, tile].sort((a, b) => a - b);
+                    sub = group.map((t, i) => (i === 0 ? tileName(t) : tileChar(t))).join('');
+                }
                 descs.push({
                     ico: labelOf(o.type),
-                    sub: tileName(tile),
+                    sub,
                     cls: o.type === 'win' ? 'win' : '',
                     onClick: () => {
                         game.claim(HUMAN, { type: o.type, chow: o.chow });
@@ -337,6 +353,12 @@ function afterAction() {
         return;
     }
     if (game.phase === 'claim' && game.pending) {
+        // 声明按优先级处理：最高优先级的选项属于 AI 时，先让 AI 表态，
+        // 避免玩家的「碰」抢在 AI 的「胡」之前
+        if (game.pending.options[0].player !== HUMAN) {
+            scheduleAi();
+            return;
+        }
         const mine = game.pending.options.filter((o) => o.player === HUMAN);
         if (mine.length > 0) {
             refresh();
@@ -524,6 +546,11 @@ window.addEventListener('resize', onResize);
 window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', onResize);
+}
+// 操作按钮/日志出现或消失会改变画布区高度，需重新布局，
+// 否则 canvas 会被 CSS 非等比拉伸（牌面和头像变形）
+if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => onResize()).observe(document.getElementById('canvas-wrap'));
 }
 relayout();
 newGame();
